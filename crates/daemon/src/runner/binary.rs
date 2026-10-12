@@ -53,13 +53,147 @@ pub async fn get_latest_runner_version() -> Result<String> {
 /// If `cache_dir/runner-{version}/run.sh` (or `run.cmd` on Windows) already exists, returns early.
 /// Otherwise downloads the archive, extracts it, and cleans up.
 /// Returns the path to the versioned runner directory.
-pub async fn ensure_runner_binary(cache_dir: &Path) -> Result<PathBuf> {
+pub async fn ensure_runner_binary(
+    cache_dir: &Path,
+    custom_url: Option<&str>,
+) -> Result<PathBuf> {
     let (os, arch) = detect_platform();
+    if let Some(url) = custom_url.map(str::trim).filter(|url| !url.is_empty()) {
+        return ensure_custom_runner_binary(cache_dir, url, os, arch).await;
+    }
+
     let version = get_latest_runner_version()
         .await
         .context("Failed to determine latest runner version")?;
     let runner_dir = cache_dir.join(format!("runner-{version}"));
     fetch_and_cache(runner_dir, &version, os, arch).await
+}
+
+async fn ensure_custom_runner_binary(
+    cache_dir: &Path,
+    url: &str,
+    os: &str,
+    arch: &str,
+) -> Result<PathBuf> {
+    use reqwest::header::{CONTENT_LENGTH, ETAG, LAST_MODIFIED};
+
+    let _guard = DOWNLOAD_LOCK.lock().await;
+    tokio::fs::create_dir_all(cache_dir)
+        .await
+        .context("Failed to create runner cache directory")?;
+
+    let stem = format!("runner-custom-{os}-{arch}");
+    let runner_dir = cache_dir.join(&stem);
+    let marker_path = cache_dir.join(format!("{stem}.meta"));
+    let script_name = if os == "win" { "run.cmd" } else { "run.sh" };
+    let client = reqwest::Client::new();
+
+    // A custom release asset may be replaced without changing its URL. Reuse
+    // it only when the server provides a stable validator and it still matches.
+    let (signature, can_reuse_cache) = match client.head(url).send().await {
+        Ok(response) if response.status().is_success() => {
+            let headers = response.headers();
+            let etag = headers.get(ETAG).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+            let modified = headers.get(LAST_MODIFIED).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+            let length = headers.get(CONTENT_LENGTH).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+            (
+                format!("{url}\n{etag}\n{modified}\n{length}"),
+                !etag.is_empty() || !modified.is_empty(),
+            )
+        }
+        _ => (String::new(), false),
+    };
+
+    if can_reuse_cache
+        && runner_dir.join(script_name).is_file()
+        && tokio::fs::read_to_string(&marker_path).await.is_ok_and(|cached| cached == signature)
+    {
+        tracing::debug!("Custom runner archive is unchanged at {url}");
+        return Ok(runner_dir);
+    }
+
+    let response = client.get(url).send().await
+        .with_context(|| format!("Failed to download custom runner from {url}"))?;
+    if !response.status().is_success() {
+        anyhow::bail!("Failed to download custom runner from {url}: HTTP {}", response.status());
+    }
+    let bytes = response.bytes().await.context("Failed to read custom runner archive")?;
+    let ext = if os == "win" { "zip" } else { "tar.gz" };
+    let archive_path = cache_dir.join(format!("{stem}.{ext}"));
+    tokio::fs::write(&archive_path, &bytes)
+        .await
+        .with_context(|| format!("Failed to write custom runner archive to {archive_path:?}"))?;
+
+    let staging_dir = cache_dir.join(format!("{stem}.staging-{}", std::process::id()));
+    let backup_dir = cache_dir.join(format!("{stem}.previous"));
+    if tokio::fs::metadata(&staging_dir).await.is_ok() {
+        tokio::fs::remove_dir_all(&staging_dir).await.context("Failed to clear stale staging directory")?;
+    }
+    tokio::fs::create_dir_all(&staging_dir).await.context("Failed to create staging directory")?;
+
+    let extraction: Result<()> = async {
+        if ext == "zip" {
+            let archive_clone = archive_path.clone();
+            let staging_clone = staging_dir.clone();
+            tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+                let file = std::fs::File::open(&archive_clone)?;
+                let mut archive = zip::ZipArchive::new(file)?;
+                archive.extract(&staging_clone)?;
+                Ok(())
+            })
+            .await
+            .context("Custom runner zip extraction task panicked")??;
+        } else {
+            let status = tokio::process::Command::new("tar")
+                .arg("xzf")
+                .arg(&archive_path)
+                .arg("-C")
+                .arg(&staging_dir)
+                .status()
+                .await
+                .context("Failed to extract custom runner tarball")?;
+            if !status.success() {
+                anyhow::bail!("Custom runner tar extraction failed with status {status}");
+            }
+        }
+        if !staging_dir.join(script_name).is_file() {
+            anyhow::bail!("Custom runner archive is missing {script_name}");
+        }
+        Ok(())
+    }.await;
+
+    if let Err(error) = extraction {
+        let _ = tokio::fs::remove_file(&archive_path).await;
+        let _ = tokio::fs::remove_dir_all(&staging_dir).await;
+        return Err(error);
+    }
+
+    if tokio::fs::metadata(&backup_dir).await.is_ok() {
+        tokio::fs::remove_dir_all(&backup_dir).await.context("Failed to remove previous runner backup")?;
+    }
+    let had_previous = tokio::fs::metadata(&runner_dir).await.is_ok();
+    if had_previous {
+        tokio::fs::rename(&runner_dir, &backup_dir).await.context("Failed to move old custom runner cache")?;
+    }
+    if let Err(error) = tokio::fs::rename(&staging_dir, &runner_dir).await {
+        if had_previous {
+            let _ = tokio::fs::rename(&backup_dir, &runner_dir).await;
+        }
+        return Err(error).context("Failed to install custom runner cache");
+    }
+    if had_previous {
+        let _ = tokio::fs::remove_dir_all(&backup_dir).await;
+    }
+    let _ = tokio::fs::remove_file(&archive_path).await;
+
+    if can_reuse_cache {
+        tokio::fs::write(&marker_path, signature).await.context("Failed to save custom runner cache metadata")?;
+    } else {
+        let _ = tokio::fs::remove_file(&marker_path).await;
+    }
+
+    tracing::info!("Custom runner installed from {url} at {runner_dir:?}");
+    Ok(runner_dir)
 }
 
 /// Ensures a **Linux** GitHub Actions runner binary is downloaded and

@@ -14,6 +14,7 @@ pub async fn configure_runner(
     token: &str,
     name: &str,
     labels: &[String],
+    disable_update: bool,
 ) -> Result<()> {
     // Remove stale local config so the config script doesn't refuse to reconfigure
     for file in &[".runner", ".credentials", ".credentials_rsaparams"] {
@@ -33,19 +34,22 @@ pub async fn configure_runner(
     if let Some(ref path) = *SHELL_PATH {
         config_cmd.env("PATH", path);
     }
+    config_cmd.args([
+        "--url",
+        url,
+        "--token",
+        token,
+        "--name",
+        name,
+        "--labels",
+        &labels_str,
+        "--unattended",
+        "--replace",
+    ]);
+    if disable_update {
+        config_cmd.arg("--disableupdate");
+    }
     let output = config_cmd
-        .args([
-            "--url",
-            url,
-            "--token",
-            token,
-            "--name",
-            name,
-            "--labels",
-            &labels_str,
-            "--unattended",
-            "--replace",
-        ])
         .current_dir(runner_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -70,7 +74,10 @@ pub async fn configure_runner(
     Ok(())
 }
 
-pub async fn start_runner(runner_dir: &Path) -> Result<Child> {
+pub async fn start_runner(
+    runner_dir: &Path,
+    artifact_results_url: Option<&str>,
+) -> Result<Child> {
     let dir_str = runner_dir.to_string_lossy().to_string();
     let mut cmd = Command::new(runner_dir.join(run_script()));
     cmd.current_dir(runner_dir)
@@ -82,6 +89,11 @@ pub async fn start_runner(runner_dir: &Path) -> Result<Child> {
     // Pass the user's full shell PATH so runners can find node, docker, etc.
     if let Some(ref path) = *SHELL_PATH {
         cmd.env("PATH", path);
+    }
+    if let Some(url) = artifact_results_url.map(str::trim).filter(|url| !url.is_empty()) {
+        // The patched runner reads this inherited variable in its action handlers
+        // and maps it to ACTIONS_RESULTS_URL for artifact uploads.
+        cmd.env("ACTIONS_ARTIFACTS_RESULTS_URL_OVERRIDE", url);
     }
 
     // Spawn in its own process group so we can signal the entire tree
@@ -143,16 +155,43 @@ mod tests {
             "fake-token",
             "test-runner",
             &["self-hosted".to_string()],
+            false,
         )
         .await;
         // Should fail because the config script doesn't exist
         assert!(result.is_err());
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_start_runner_passes_artifact_results_override() {
+        use tokio::io::AsyncReadExt;
+
+        const EXPECTED: &str = "http://artifact-results.invalid:8007/";
+        let dir = tempfile::tempdir().unwrap();
+        let script_path = dir.path().join(run_script());
+        std::fs::write(
+            &script_path,
+            "#!/bin/sh\nprintf '%s\\n' \"$ACTIONS_ARTIFACTS_RESULTS_URL_OVERRIDE\"\n",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script_path, perms).unwrap();
+
+        let mut child = start_runner(dir.path(), Some(EXPECTED)).await.unwrap();
+        let mut output = Vec::new();
+        child.stdout.take().unwrap().read_to_end(&mut output).await.unwrap();
+        let status = child.wait().await.unwrap();
+        assert!(status.success());
+        assert_eq!(String::from_utf8(output).unwrap().trim(), EXPECTED);
+    }
+
     #[tokio::test]
     async fn test_start_runner_fails_without_run_script() {
         let dir = tempfile::tempdir().unwrap();
-        let result = start_runner(dir.path()).await;
+        let result = start_runner(dir.path(), None).await;
         // On Unix, spawn fails because the script doesn't exist.
         // On Windows, cmd.exe may spawn but the script won't be found.
         // Either way, the result should indicate failure.
@@ -249,6 +288,7 @@ mod tests {
                 "macOS".to_string(),
                 "arm64".to_string(),
             ],
+            false,
         )
         .await;
         // Still fails without script, but we verify the call compiles and runs

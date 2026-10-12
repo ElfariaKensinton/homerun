@@ -6,6 +6,14 @@ fn default_scan_labels() -> Vec<String> {
     vec!["self-hosted".to_string()]
 }
 
+fn default_custom_runner_download_url() -> Option<String> {
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        Some("https://github.com/ElfariaKensinton/runner/releases/download/v1/actions-runner.tar.gz".to_string())
+    } else {
+        None
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Preferences {
@@ -18,6 +26,12 @@ pub struct Preferences {
     pub workspace_path: Option<String>,
     #[serde(default)]
     pub auto_scan: bool,
+    /// Optional patched runner archive URL; empty means use the official runner.
+    #[serde(default = "default_custom_runner_download_url")]
+    pub custom_runner_download_url: Option<String>,
+    /// Shared Actions Results API base URL inherited by every native runner process.
+    #[serde(default)]
+    pub artifact_results_url: Option<String>,
 }
 
 impl Default for Preferences {
@@ -29,6 +43,8 @@ impl Default for Preferences {
             scan_labels: default_scan_labels(),
             workspace_path: None,
             auto_scan: false,
+            custom_runner_download_url: default_custom_runner_download_url(),
+            artifact_results_url: None,
         }
     }
 }

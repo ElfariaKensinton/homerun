@@ -50,7 +50,15 @@ export function Settings() {
     scan_labels: [],
     workspace_path: null,
     auto_scan: false,
+    custom_runner_download_url: null,
+    artifact_results_url: null,
   });
+
+  const [customRunnerUrlInput, setCustomRunnerUrlInput] = useState("");
+  const [artifactResultsUrlInput, setArtifactResultsUrlInput] = useState("");
+  const [runtimeSettingsSaving, setRuntimeSettingsSaving] = useState(false);
+  const [runtimeSettingsMessage, setRuntimeSettingsMessage] = useState<string | null>(null);
+  const [runtimeSettingsError, setRuntimeSettingsError] = useState(false);
 
   // Check launch-at-login status on mount
   useEffect(() => {
@@ -69,6 +77,14 @@ export function Settings() {
   useEffect(() => {
     setLabelsInput(preferences.scan_labels.join(", "));
   }, [preferences.scan_labels]);
+
+  useEffect(() => {
+    setCustomRunnerUrlInput(preferences.custom_runner_download_url ?? "");
+  }, [preferences.custom_runner_download_url]);
+
+  useEffect(() => {
+    setArtifactResultsUrlInput(preferences.artifact_results_url ?? "");
+  }, [preferences.artifact_results_url]);
 
   function updatePreference(key: keyof Preferences, value: boolean) {
     setPreferences((prev) => {
@@ -96,6 +112,31 @@ export function Settings() {
         });
       return updated;
     });
+  }
+
+  async function saveRunnerRuntimeSettings() {
+    const custom_runner_download_url = customRunnerUrlInput.trim() || null;
+    const artifact_results_url = artifactResultsUrlInput.trim() || null;
+    setRuntimeSettingsSaving(true);
+    setRuntimeSettingsMessage(null);
+    setRuntimeSettingsError(false);
+
+    try {
+      const saved = await api.updatePreferences({
+        ...preferences,
+        custom_runner_download_url,
+        artifact_results_url,
+      });
+      setPreferences(saved);
+      setRuntimeSettingsMessage(
+        "Saved. All active runners restart automatically; busy runners restart after their current job finishes. Offline runners use these settings the next time they start.",
+      );
+    } catch (error) {
+      setRuntimeSettingsError(true);
+      setRuntimeSettingsMessage(`Could not save runner settings: ${String(error)}`);
+    } finally {
+      setRuntimeSettingsSaving(false);
+    }
   }
 
   const pollInBackground = useCallback(
@@ -639,6 +680,66 @@ export function Settings() {
             checked={preferences.auto_scan}
             onChange={(checked) => updatePreferences({ auto_scan: checked })}
           />
+        </div>
+      </section>
+
+      {/* Runner Runtime */}
+      <section style={{ marginBottom: 32 }}>
+        <SectionHeader title="Runner Runtime" />
+        <div className="card">
+          <div style={{ padding: "8px 0" }}>
+            <div style={{ fontWeight: 500, marginBottom: 2, fontSize: 14 }}>
+              Custom runner archive URL
+            </div>
+            <p className="text-muted" style={{ margin: 0, fontSize: 12, marginBottom: 8 }}>
+              Native runners download this archive instead of the official runner. Leave empty to use the official runner.
+              The archive is revalidated on runner starts so updates at the same URL are picked up.
+            </p>
+            <input
+              type="url"
+              value={customRunnerUrlInput}
+              onChange={(e) => setCustomRunnerUrlInput(e.target.value)}
+              placeholder="https://example.com/actions-runner.tar.gz"
+              style={{ width: "100%", maxWidth: 640 }}
+            />
+          </div>
+          <Divider />
+          <div style={{ padding: "8px 0" }}>
+            <div style={{ fontWeight: 500, marginBottom: 2, fontSize: 14 }}>
+              Artifact Results URL
+            </div>
+            <p className="text-muted" style={{ margin: 0, fontSize: 12, marginBottom: 8 }}>
+              Passed to every native runner as ACTIONS_ARTIFACTS_RESULTS_URL_OVERRIDE. The patched runner uses it for artifact uploads.
+              Saving restarts all active runners automatically; busy runners finish their current job first.
+            </p>
+            <input
+              type="url"
+              value={artifactResultsUrlInput}
+              onChange={(e) => setArtifactResultsUrlInput(e.target.value)}
+              placeholder="http://your-server:8007/"
+              style={{ width: "100%", maxWidth: 640 }}
+            />
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
+            <button
+              className="btn btn-primary"
+              onClick={() => void saveRunnerRuntimeSettings()}
+              disabled={runtimeSettingsSaving}
+            >
+              {runtimeSettingsSaving ? "Saving..." : "Save and restart runners"}
+            </button>
+            {runtimeSettingsMessage && (
+              <span
+                role="status"
+                style={{
+                  fontSize: 12,
+                  color: runtimeSettingsError ? "var(--accent-red, #f85149)" : "var(--text-secondary)",
+                }}
+              >
+                {runtimeSettingsMessage}
+              </span>
+            )}
+          </div>
         </div>
       </section>
 

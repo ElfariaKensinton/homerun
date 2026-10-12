@@ -23,6 +23,8 @@ function makePrefs(overrides?: Partial<Preferences>): Preferences {
     scan_labels: [],
     workspace_path: null,
     auto_scan: false,
+    custom_runner_download_url: null,
+    artifact_results_url: null,
     ...overrides,
   };
 }

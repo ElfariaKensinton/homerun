@@ -1,0 +1,118 @@
+name: Build HomeRun macOS ARM64 (self-hosted)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    name: Build HomeRun for Apple Silicon
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Verify self-hosted Apple Silicon runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = "Darwin"
+          test "$(uname -m)" = "arm64"
+          sw_vers
+
+      - name: Install Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          for dir in "$HOME/.cargo/bin" "/opt/homebrew/bin" "/usr/local/bin"; do
+            if [ -d "$dir" ]; then
+              export PATH="$dir:$PATH"
+              echo "$dir" >> "$GITHUB_PATH"
+            fi
+          done
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path
+            export PATH="$HOME/.cargo/bin:$PATH"
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+          rustup toolchain install stable --target aarch64-apple-darwin --profile minimal --no-self-update
+          TOOLCHAIN_BIN="$(dirname "$(rustup which --toolchain stable rustc)")"
+          test -x "$TOOLCHAIN_BIN/rustc"
+          test -x "$TOOLCHAIN_BIN/cargo"
+          echo "$TOOLCHAIN_BIN" >> "$GITHUB_PATH"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Verify build toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --version
+          cargo --version
+          node --version
+          npm --version
+
+      - name: Install frontend dependencies
+        working-directory: apps/desktop
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --cache "$RUNNER_TEMP/npm-cache"
+
+      - name: Build homerund sidecar
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release -p homerund --target aarch64-apple-darwin
+          mkdir -p apps/desktop/src-tauri/binaries
+          cp target/aarch64-apple-darwin/release/homerund \
+            apps/desktop/src-tauri/binaries/homerund-aarch64-apple-darwin
+
+      - name: Build homerun CLI
+        run: cargo build --release -p homerun --target aarch64-apple-darwin
+
+      - name: Package CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p cli-dist
+          cp target/aarch64-apple-darwin/release/homerun cli-dist/
+          cp target/aarch64-apple-darwin/release/homerund cli-dist/
+          REF="$(printf '%s' "$GITHUB_REF_NAME" | tr '/' '-')"
+          tar -czf "homerun-$REF-aarch64-apple-darwin.tar.gz" -C cli-dist .
+          ls -lh homerun-*.tar.gz
+
+      - name: Build HomeRun DMG
+        working-directory: apps/desktop
+        run: npx tauri build --target aarch64-apple-darwin
+
+      - name: List build outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -lh homerun-*.tar.gz
+          find apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print
+
+      - name: Upload CLI archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-macos-arm64
+          path: homerun-*.tar.gz
+          if-no-files-found: error
+
+      - name: Upload HomeRun DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: HomeRun-macos-arm64
+          path: apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error

@@ -20,6 +20,8 @@ pub async fn update_preferences(
         .save(&config_path)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+    drop(config);
+    state.runner_manager.update_preferences(prefs.clone()).await;
     state
         .notifications
         .set_status_changes(prefs.notify_status_changes);

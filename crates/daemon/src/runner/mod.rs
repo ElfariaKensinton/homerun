@@ -8,7 +8,7 @@ pub mod steps;
 pub mod types;
 
 use crate::auth::AuthManager;
-use crate::config::Config;
+use crate::config::{Config, Preferences};
 use crate::github::GitHubClient;
 use crate::runner::binary::ensure_runner_binary;
 use crate::runner::process::{
@@ -20,8 +20,9 @@ use crate::runner::steps::{StepsResponse, WorkerLogWatcher};
 use crate::runner::types::{RunnerConfig, RunnerInfo, RunnerMode};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::io::AsyncRead;
 use tokio::sync::{broadcast, watch, Notify, RwLock};
@@ -79,6 +80,10 @@ struct ProcessHandle {
 #[derive(Clone)]
 pub struct RunnerManager {
     config: Arc<Config>,
+    preferences: Arc<RwLock<Preferences>>,
+    pending_runner_restarts: Arc<RwLock<HashSet<String>>>,
+    restart_worker_running: Arc<AtomicBool>,
+    restart_signal: Arc<Notify>,
     runners: Arc<RwLock<HashMap<String, RunnerInfo>>>,
     processes: Arc<RwLock<HashMap<String, ProcessHandle>>>,
     log_tx: Arc<broadcast::Sender<LogEntry>>,
@@ -157,8 +162,13 @@ impl RunnerManager {
     pub fn new(config: Config) -> Self {
         let (log_tx, _) = broadcast::channel(1024);
         let (event_tx, _) = broadcast::channel(256);
+        let preferences = config.preferences.clone();
         Self {
             config: Arc::new(config),
+            preferences: Arc::new(RwLock::new(preferences)),
+            pending_runner_restarts: Arc::new(RwLock::new(HashSet::new())),
+            restart_worker_running: Arc::new(AtomicBool::new(false)),
+            restart_signal: Arc::new(Notify::new()),
             runners: Arc::new(RwLock::new(HashMap::new())),
             processes: Arc::new(RwLock::new(HashMap::new())),
             log_tx: Arc::new(log_tx),
@@ -180,8 +190,124 @@ impl RunnerManager {
     }
 
     pub async fn set_auth_token(&self, token: Option<String>) {
+        let has_token = token.is_some();
         let mut t = self.auth_token.write().await;
         *t = token;
+        drop(t);
+        if has_token {
+            self.schedule_pending_runner_restarts();
+        }
+    }
+
+    /// Update the single runtime preference source used by all native runners.
+    /// Idle runners restart now; busy runners restart after their current job.
+    pub async fn update_preferences(&self, preferences: Preferences) {
+        let runner_source_changed = {
+            let mut current = self.preferences.write().await;
+            let changed = current.custom_runner_download_url != preferences.custom_runner_download_url
+                || current.artifact_results_url != preferences.artifact_results_url;
+            *current = preferences;
+            changed
+        };
+        if !runner_source_changed {
+            return;
+        }
+
+        let active_native_ids: Vec<String> = self.runners.read().await.values()
+            .filter(|runner| matches!(&runner.state, RunnerState::Online | RunnerState::Busy))
+            .map(|runner| runner.config.id.clone())
+            .collect();
+        if active_native_ids.is_empty() {
+            return;
+        }
+        self.pending_runner_restarts.write().await.extend(active_native_ids);
+        self.restart_signal.notify_one();
+        self.schedule_pending_runner_restarts();
+    }
+
+    fn schedule_pending_runner_restarts(&self) {
+        if self.restart_worker_running
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            self.restart_signal.notify_one();
+            return;
+        }
+        let manager = self.clone();
+        tokio::spawn(async move {
+            manager.process_pending_runner_restarts().await;
+            manager.restart_worker_running.store(false, Ordering::Release);
+            let pending = !manager.pending_runner_restarts.read().await.is_empty();
+            let has_auth = manager.auth_token.read().await.is_some();
+            if pending && has_auth {
+                manager.schedule_pending_runner_restarts();
+            }
+        });
+    }
+
+    async fn process_pending_runner_restarts(&self) {
+        loop {
+            let ids: Vec<String> = self.pending_runner_restarts.read().await.iter().cloned().collect();
+            if ids.is_empty() {
+                return;
+            }
+            let Some(token) = self.auth_token.read().await.clone() else {
+                tracing::warn!("Native runner restarts are queued until HomeRun has a GitHub auth token");
+                return;
+            };
+
+            for id in ids {
+                let Some(runner) = self.get(&id).await else {
+                    self.pending_runner_restarts.write().await.remove(&id);
+                    continue;
+                };
+                match runner.state {
+                    RunnerState::Busy | RunnerState::Stopping | RunnerState::Creating | RunnerState::Registering => continue,
+                    RunnerState::Offline | RunnerState::Error | RunnerState::Deleting => {
+                        // A runner without a live process uses the latest setting next time it starts.
+                        self.pending_runner_restarts.write().await.remove(&id);
+                    }
+                    RunnerState::Online => match self.restart_runner_with_latest_settings(&id, &token).await {
+                        Ok(true) => {
+                            self.pending_runner_restarts.write().await.remove(&id);
+                        }
+                        Ok(false) => {},
+                        Err(error) => {
+                            tracing::error!("Failed to restart runner {id} after runtime settings changed: {error:#}");
+                            self.pending_runner_restarts.write().await.remove(&id);
+                            let _ = self.update_state_with_error(
+                                &id,
+                                RunnerState::Error,
+                                Some(format!("Failed to restart after runtime settings changed: {error:#}")),
+                            ).await;
+                        }
+                    },
+                }
+            }
+
+            if self.pending_runner_restarts.read().await.is_empty() {
+                return;
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {},
+                _ = self.restart_signal.notified() => {},
+            }
+        }
+    }
+
+    /// Returns false if the runner became busy and its restart must wait.
+    async fn restart_runner_with_latest_settings(&self, id: &str, token: &str) -> Result<bool> {
+        let runner = self.get(id).await.ok_or_else(|| anyhow::anyhow!("Runner not found"))?;
+        if matches!(runner.state, RunnerState::Offline | RunnerState::Error | RunnerState::Deleting) {
+            return Ok(true);
+        }
+        if runner.state != RunnerState::Online {
+            return Ok(false);
+        }
+        self.stop_process(id).await?;
+        self.update_state(id, RunnerState::Registering).await?;
+        self.register_and_start_from_registering(id, token).await?;
+        Ok(true)
     }
 
     /// Spawn a background task that periodically checks busy runners missing
@@ -984,6 +1110,7 @@ impl RunnerManager {
                         }
                         manager.emit_state_event(runner_id, "online");
                         let _ = manager.save_to_disk().await;
+                        manager.restart_signal.notify_one();
                     }
                     None => {}
                 }
@@ -1465,39 +1592,29 @@ impl RunnerManager {
             .await
             .ok_or_else(|| anyhow::anyhow!("Runner not found"))?;
         let config = &runner.config;
+        let preferences = self.preferences.read().await.clone();
+        let custom_runner_url = preferences.custom_runner_download_url.as_deref()
+            .map(str::trim).filter(|url| !url.is_empty());
+        let artifact_results_url = preferences.artifact_results_url.as_deref()
+            .map(str::trim).filter(|url| !url.is_empty());
 
-        // Check both .runner and .runner_migrated (newer runner versions rename
-        // the config file during a migration).
         let already_configured = config.work_dir.join(".runner").exists()
             || config.work_dir.join(".runner_migrated").exists();
 
-        if !already_configured {
-            // First-time setup: download binary and copy to work_dir. Container
-            // runners always need the Linux build — even bind-mounted into a
-            // container launched from Docker Desktop on macOS/Windows, the
-            // container itself runs a Linux kernel.
-            let cached_runner_dir = if config.mode == RunnerMode::Container {
+        if config.mode == RunnerMode::Container {
+            if !already_configured {
                 let (_, arch) = binary::detect_platform();
-                binary::ensure_runner_binary_for_container(&self.config.cache_dir(), arch)
-                    .await
-                    .context("Failed to download Linux runner binary for container")?
-            } else {
-                ensure_runner_binary(&self.config.cache_dir())
-                    .await
-                    .context("Failed to download runner binary")?
-            };
-
-            copy_dir_recursive(&cached_runner_dir, &config.work_dir)
-                .context("Failed to copy runner binary to work dir")?;
+                let cached_runner_dir = binary::ensure_runner_binary_for_container(&self.config.cache_dir(), arch)
+                    .await.context("Failed to download Linux runner binary for container")?;
+                copy_dir_recursive(&cached_runner_dir, &config.work_dir)
+                    .context("Failed to copy runner binary to work dir")?;
+            }
         } else {
-            tracing::info!("Runner {} already configured, skipping binary download", id);
-        }
-
-        // Kill any orphaned runner processes from a previous daemon session
-        // BEFORE reconfiguring, so the old process releases the GitHub session.
-        // Not applicable to container runners — nothing native was ever spawned.
-        if config.mode != RunnerMode::Container {
             kill_orphaned_processes(&config.work_dir).await;
+            let cached_runner_dir = ensure_runner_binary(&self.config.cache_dir(), custom_runner_url)
+                .await.context("Failed to download configured runner binary")?;
+            copy_dir_recursive(&cached_runner_dir, &config.work_dir)
+                .context("Failed to refresh runner binary in work directory")?;
         }
 
         let gh = GitHubClient::new(Some(auth_token.to_string()))?;
@@ -1551,6 +1668,13 @@ impl RunnerManager {
             Option<u32>,
             Option<String>,
         ) = if let (Some(dc), Some(cc)) = (&docker_client, container_cfg) {
+            let mut container_env = cc.extra_env.clone();
+            if let Some(url) = artifact_results_url {
+                container_env.push((
+                    "ACTIONS_ARTIFACTS_RESULTS_URL_OVERRIDE".to_string(),
+                    url.to_string(),
+                ));
+            }
             let container = docker::configure_and_start_container(
                 dc,
                 &config.work_dir,
@@ -1559,7 +1683,7 @@ impl RunnerManager {
                 &reg.token,
                 &config.name,
                 &config.labels,
-                &cc.extra_env,
+                &container_env,
             )
             .await
             .context("Failed to configure/start container runner")?;
@@ -1581,12 +1705,13 @@ impl RunnerManager {
                 &reg.token,
                 &config.name,
                 &config.labels,
+                custom_runner_url.is_some(),
             )
             .await
             .context("Failed to configure runner")?;
 
             // Spawn the runner script (run.sh/run.cmd)
-            let mut child = start_runner(&config.work_dir)
+            let mut child = start_runner(&config.work_dir, artifact_results_url)
                 .await
                 .context("Failed to start runner process")?;
 
