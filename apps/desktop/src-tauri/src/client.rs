@@ -807,7 +807,7 @@ mod preferences_tests {
             out["custom_runner_download_url"],
             "https://example.invalid/actions-runner.tar.gz"
         );
-        assert_eq!(out["watch_new_repositories"], true);
-        assert_eq!(out["auto_create_runner_for_new_repositories"], true);
+        assert!(out["watch_new_repositories"].as_bool().unwrap());
+        assert!(out["auto_create_runner_for_new_repositories"].as_bool().unwrap());
     }
 }

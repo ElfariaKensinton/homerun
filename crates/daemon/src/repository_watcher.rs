@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    path::{Path, PathBuf},
+    path::Path,
     time::Duration,
 };
 
@@ -163,7 +163,7 @@ async fn load_snapshot(path: &Path) -> WatchSnapshot {
     }
 }
 
-async fn save_snapshot(path: &PathBuf, snapshot: &WatchSnapshot) {
+async fn save_snapshot(path: &Path, snapshot: &WatchSnapshot) {
     match serde_json::to_vec_pretty(snapshot) {
         Ok(bytes) => {
             if let Err(error) = tokio::fs::write(path, bytes).await {
