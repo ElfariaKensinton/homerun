@@ -104,21 +104,15 @@ jobs:
           ls -lh homerun-*.tar.gz
           find apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print
 
-      - name: Upload CLI archive to custom artifact server
+      - name: Upload CLI archive
         uses: actions/upload-artifact@v4
-        env:
-          ARTIFACT_RESULTS_URL: ${{ vars.ARTIFACT_RESULTS_URL }}
-          NODE_OPTIONS: --require=${{ github.workspace }}/.github/scripts/override-artifact-results-url.cjs
         with:
           name: cli-macos-arm64
           path: homerun-*.tar.gz
           if-no-files-found: error
 
-      - name: Upload HomeRun DMG to custom artifact server
+      - name: Upload HomeRun DMG
         uses: actions/upload-artifact@v4
-        env:
-          ARTIFACT_RESULTS_URL: ${{ vars.ARTIFACT_RESULTS_URL }}
-          NODE_OPTIONS: --require=${{ github.workspace }}/.github/scripts/override-artifact-results-url.cjs
         with:
           name: HomeRun-macos-arm64
           path: apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
