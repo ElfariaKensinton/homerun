@@ -26,6 +26,12 @@ pub struct Preferences {
     pub workspace_path: Option<String>,
     #[serde(default)]
     pub auto_scan: bool,
+    /// Poll GitHub for repositories created after monitoring is enabled.
+    #[serde(default)]
+    pub watch_new_repositories: bool,
+    /// Automatically create and start a default runner for newly discovered repositories.
+    #[serde(default)]
+    pub auto_create_runner_for_new_repositories: bool,
     /// Optional patched runner archive URL; empty means use the official runner.
     #[serde(default = "default_custom_runner_download_url")]
     pub custom_runner_download_url: Option<String>,
@@ -43,6 +49,8 @@ impl Default for Preferences {
             scan_labels: default_scan_labels(),
             workspace_path: None,
             auto_scan: false,
+            watch_new_repositories: false,
+            auto_create_runner_for_new_repositories: false,
             custom_runner_download_url: default_custom_runner_download_url(),
             artifact_results_url: None,
         }
@@ -215,6 +223,8 @@ mod tests {
         assert_eq!(prefs.scan_labels, vec!["self-hosted".to_string()]);
         assert_eq!(prefs.workspace_path, None);
         assert!(!prefs.auto_scan);
+        assert!(!prefs.watch_new_repositories);
+        assert!(!prefs.auto_create_runner_for_new_repositories);
         // Existing fields preserved
         assert!(prefs.start_runners_on_launch);
         assert!(!prefs.notify_status_changes);
@@ -241,6 +251,8 @@ mod tests {
         config.preferences.scan_labels = vec!["self-hosted".to_string(), "gpu".to_string()];
         config.preferences.workspace_path = Some("/Users/dev/workspace".to_string());
         config.preferences.auto_scan = true;
+        config.preferences.watch_new_repositories = true;
+        config.preferences.auto_create_runner_for_new_repositories = true;
         config.save(&path).unwrap();
 
         let loaded = Config::load(&path).unwrap();
@@ -250,5 +262,7 @@ mod tests {
             Some("/Users/dev/workspace".to_string())
         );
         assert!(loaded.preferences.auto_scan);
+        assert!(loaded.preferences.watch_new_repositories);
+        assert!(loaded.preferences.auto_create_runner_for_new_repositories);
     }
 }

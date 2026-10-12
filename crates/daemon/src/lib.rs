@@ -7,6 +7,7 @@ pub mod metrics;
 pub mod notifications;
 pub mod platform;
 pub mod runner;
+pub mod repository_watcher;
 pub mod scanner;
 pub mod server;
 pub mod updater;

@@ -243,6 +243,8 @@ export interface Preferences {
   scan_labels: string[];
   workspace_path: string | null;
   auto_scan: boolean;
+  watch_new_repositories: boolean;
+  auto_create_runner_for_new_repositories: boolean;
   custom_runner_download_url?: string | null;
   artifact_results_url?: string | null;
 }

@@ -3,6 +3,15 @@ run-name: Build HomeRun macOS ARM64 (${{ github.ref_name }})
 
 on:
   workflow_dispatch:
+    inputs:
+      runner_type:
+        description: Where to run this build
+        required: true
+        type: choice
+        default: github-hosted
+        options:
+          - github-hosted
+          - self-hosted
 
 permissions:
   contents: read
@@ -14,12 +23,12 @@ env:
 jobs:
   build:
     name: Build HomeRun for Apple Silicon
-    runs-on: macos-15
+    runs-on: ${{ inputs.runner_type == 'self-hosted' && fromJSON('["self-hosted", "macOS", "ARM64"]') || 'macos-15' }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
 
-      - name: Verify GitHub-hosted Apple Silicon runner
+      - name: Verify Apple Silicon runner
         shell: bash
         run: |
           set -euo pipefail

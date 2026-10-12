@@ -296,6 +296,7 @@ pub async fn serve(config: Config, daemon_logs: DaemonLogState) -> Result<()> {
 
     // Start background poller for job context (branch/PR info)
     state.runner_manager.start_job_context_poller();
+    crate::repository_watcher::start(state.clone());
 
     let app = create_router(state);
 

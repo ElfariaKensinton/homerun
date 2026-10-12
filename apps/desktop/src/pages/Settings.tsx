@@ -50,6 +50,8 @@ export function Settings() {
     scan_labels: [],
     workspace_path: null,
     auto_scan: false,
+    watch_new_repositories: false,
+    auto_create_runner_for_new_repositories: false,
     custom_runner_download_url: null,
     artifact_results_url: null,
   });
@@ -683,6 +685,29 @@ export function Settings() {
         </div>
       </section>
 
+      {/* Repository Automation */}
+      <section style={{ marginBottom: 32 }}>
+        <SectionHeader title="Repository Automation" />
+        <div className="card">
+          <ToggleSetting
+            label="Watch for new repositories"
+            description="Poll GitHub every minute for repositories created after monitoring is enabled. HomeRun's daemon must be running and authenticated."
+            checked={preferences.watch_new_repositories}
+            onChange={(checked) => updatePreferences({ watch_new_repositories: checked })}
+          />
+          <Divider />
+          <ToggleSetting
+            label="Automatically create a runner for new repositories"
+            description="Create and start one default runner when a new repository is detected. Enable repository monitoring above first."
+            checked={preferences.auto_create_runner_for_new_repositories}
+            disabled={!preferences.watch_new_repositories}
+            onChange={(checked) =>
+              updatePreferences({ auto_create_runner_for_new_repositories: checked })
+            }
+          />
+        </div>
+      </section>
+
       {/* Runner Runtime */}
       <section style={{ marginBottom: 32 }}>
         <SectionHeader title="Runner Runtime" />
@@ -926,11 +951,13 @@ function ToggleSetting({
   description,
   checked,
   onChange,
+  disabled = false,
 }: {
   label: string;
   description: string;
   checked: boolean;
   onChange: (checked: boolean) => void;
+  disabled?: boolean;
 }) {
   return (
     <div className="flex items-center justify-between" style={{ padding: "8px 0" }}>
@@ -941,14 +968,20 @@ function ToggleSetting({
         </p>
       </div>
       <div
-        onClick={() => onChange(!checked)}
+        role="switch"
+        aria-checked={checked}
+        aria-disabled={disabled}
+        onClick={() => {
+          if (!disabled) onChange(!checked);
+        }}
         style={{
           width: 40,
           height: 22,
           background: checked ? "var(--accent-green)" : "var(--bg-tertiary)",
           border: `1px solid ${checked ? "var(--accent-green)" : "var(--border)"}`,
           borderRadius: 11,
-          cursor: "pointer",
+          cursor: disabled ? "not-allowed" : "pointer",
+          opacity: disabled ? 0.45 : 1,
           flexShrink: 0,
           position: "relative",
           transition: "background 0.2s, border-color 0.2s",

@@ -283,6 +283,10 @@ pub struct Preferences {
     pub workspace_path: Option<String>,
     #[serde(default)]
     pub auto_scan: bool,
+    #[serde(default)]
+    pub watch_new_repositories: bool,
+    #[serde(default)]
+    pub auto_create_runner_for_new_repositories: bool,
     // Must mirror the daemon's `Preferences`: this struct is the GET -> PUT
     // round-trip type, so any field missing here is silently reset by the daemon.
     #[serde(default)]
@@ -787,6 +791,8 @@ mod preferences_tests {
             "scan_labels": ["self-hosted"],
             "workspace_path": null,
             "auto_scan": false,
+            "watch_new_repositories": true,
+            "auto_create_runner_for_new_repositories": true,
             "custom_runner_download_url": "https://example.invalid/actions-runner.tar.gz",
             "artifact_results_url": "http://artifact-results.invalid:8007/"
         }"#;
@@ -801,5 +807,7 @@ mod preferences_tests {
             out["custom_runner_download_url"],
             "https://example.invalid/actions-runner.tar.gz"
         );
+        assert_eq!(out["watch_new_repositories"], true);
+        assert_eq!(out["auto_create_runner_for_new_repositories"], true);
     }
 }

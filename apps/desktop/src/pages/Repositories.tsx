@@ -20,6 +20,16 @@ export function Repositories() {
   const [preferences, setPreferences] = useState<Preferences | null>(null);
   const [labelFilter, setLabelFilter] = useState<string | null>(null);
   const [sourceFilter, setSourceFilter] = useState<string | null>(null);
+  const [showBulkConfirm, setShowBulkConfirm] = useState(false);
+  const [bulkCreating, setBulkCreating] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState<{ completed: number; total: number } | null>(
+    null,
+  );
+  const [bulkResult, setBulkResult] = useState<{
+    created: number;
+    skipped: number;
+    failures: { repo: string; error: string }[];
+  } | null>(null);
 
   // Load preferences on mount
   useEffect(() => {
@@ -48,6 +58,51 @@ export function Repositories() {
     }
     return map;
   }, [runners]);
+
+  // Only add runners to repositories that do not already have one.
+  const reposWithoutRunners = useMemo(
+    () => repos.filter((repo) => !runnerCountByRepo.has(repo.full_name)),
+    [repos, runnerCountByRepo],
+  );
+
+  async function handleBulkCreate() {
+    const targets = repos.filter((repo) => !runnerCountByRepo.has(repo.full_name));
+    const failures: { repo: string; error: string }[] = [];
+    let created = 0;
+    setShowBulkConfirm(false);
+    setBulkResult(null);
+
+    if (targets.length === 0) {
+      setBulkResult({ created: 0, skipped: repos.length, failures });
+      return;
+    }
+
+    setBulkCreating(true);
+    setBulkProgress({ completed: 0, total: targets.length });
+    try {
+      for (let i = 0; i < targets.length; i++) {
+        const repo = targets[i];
+        try {
+          const slug = `${repo.owner}-${repo.name}`
+            .toLowerCase()
+            .replace(/[^a-z0-9]/g, "-");
+          const suffix = Math.floor(Math.random() * 9000) + 1000;
+          await createRunner({
+            repo_full_name: repo.full_name,
+            name: `${slug}-runner-${suffix}`,
+          });
+          created++;
+        } catch (error) {
+          failures.push({ repo: repo.full_name, error: String(error) });
+        }
+        setBulkProgress({ completed: i + 1, total: targets.length });
+      }
+      setBulkResult({ created, skipped: repos.length - targets.length, failures });
+    } finally {
+      setBulkCreating(false);
+      setBulkProgress(null);
+    }
+  }
 
   // Map discovered repos by full_name for O(1) lookup
   const discoveryMap = useMemo(() => {
@@ -167,7 +222,7 @@ export function Repositories() {
     <div className="page">
       <div className="page-header">
         <h1 className="page-title">Repositories</h1>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
           {discoveredRepos.length > 0 && (
             <button
               className="btn btn-secondary"
@@ -180,11 +235,69 @@ export function Repositories() {
           <button className="btn btn-secondary" onClick={handleScan} disabled={scanning}>
             {scanning ? "Scanning..." : "Scan"}
           </button>
+          <button
+            className="btn btn-secondary"
+            onClick={() => {
+              setBulkResult(null);
+              setShowBulkConfirm(true);
+            }}
+            disabled={reposLoading || repos.length === 0 || bulkCreating}
+            title="Create one default runner for every repository that does not already have one"
+          >
+            Add to All Repositories
+          </button>
           <button className="btn btn-primary" onClick={() => setWizardRepo("")}>
             + Add Runner
           </button>
         </div>
       </div>
+
+      {showBulkConfirm && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <strong style={{ fontSize: 14 }}>Add runners to all repositories?</strong>
+          <p className="text-muted" style={{ fontSize: 12, margin: "8px 0 12px" }}>
+            HomeRun will create one default runner for each repository that does not already have a
+            runner. {reposWithoutRunners.length}{" "}
+            {reposWithoutRunners.length === 1 ? "repository" : "repositories"} will receive a runner;{" "}
+            {repos.length - reposWithoutRunners.length}{" "}
+            {repos.length - reposWithoutRunners.length === 1 ? "repository" : "repositories"} that
+            already have a runner will be skipped.
+          </p>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="btn btn-secondary" onClick={() => setShowBulkConfirm(false)}>
+              Cancel
+            </button>
+            <button className="btn btn-primary" onClick={() => void handleBulkCreate()}>
+              Create Runners
+            </button>
+          </div>
+        </div>
+      )}
+
+      {bulkCreating && bulkProgress && (
+        <div className="card" role="status" style={{ marginBottom: 16, fontSize: 13 }}>
+          Creating runners: {bulkProgress.completed} of {bulkProgress.total} repositories processed.
+        </div>
+      )}
+
+      {bulkResult && (
+        <div className="card" role="status" style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 13 }}>
+            Created {bulkResult.created} runner{bulkResult.created === 1 ? "" : "s"}; skipped{" "}
+            {bulkResult.skipped} {bulkResult.skipped === 1 ? "repository" : "repositories"} that
+            already had a runner.
+          </div>
+          {bulkResult.failures.length > 0 && (
+            <div style={{ marginTop: 10, fontSize: 12, color: "var(--accent-red, #f85149)" }}>
+              {bulkResult.failures.map((failure) => (
+                <div key={failure.repo}>
+                  {failure.repo}: {failure.error}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Search */}
       <div style={{ marginBottom: 20 }}>
