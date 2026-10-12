@@ -1,4 +1,5 @@
-name: Build HomeRun macOS ARM64 (self-hosted)
+name: Build HomeRun macOS ARM64
+run-name: Build HomeRun macOS ARM64 (${{ github.ref_name }})
 
 on:
   workflow_dispatch:
@@ -13,12 +14,12 @@ env:
 jobs:
   build:
     name: Build HomeRun for Apple Silicon
-    runs-on: [self-hosted, macOS, ARM64]
+    runs-on: macos-15
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
 
-      - name: Verify self-hosted Apple Silicon runner
+      - name: Verify GitHub-hosted Apple Silicon runner
         shell: bash
         run: |
           set -euo pipefail
