@@ -28,6 +28,9 @@ function makePrefs(overrides?: Partial<Preferences>): Preferences {
     custom_runner_download_url: null,
     artifact_results_url: null,
     ...overrides,
+    watch_new_repositories: overrides?.watch_new_repositories ?? false,
+    auto_create_runner_for_new_repositories:
+      overrides?.auto_create_runner_for_new_repositories ?? false,
   };
 }
 
