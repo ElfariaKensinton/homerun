@@ -283,6 +283,12 @@ pub struct Preferences {
     pub workspace_path: Option<String>,
     #[serde(default)]
     pub auto_scan: bool,
+    // Must mirror the daemon's `Preferences`: this struct is the GET -> PUT
+    // round-trip type, so any field missing here is silently reset by the daemon.
+    #[serde(default)]
+    pub custom_runner_download_url: Option<String>,
+    #[serde(default)]
+    pub artifact_results_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -765,5 +771,35 @@ impl DaemonClient {
             .request("GET", &format!("/daemon/logs/recent{}", query), None)
             .await?;
         serde_json::from_str(&body).map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod preferences_tests {
+    use super::Preferences;
+
+    #[test]
+    fn preferences_round_trip_keeps_runner_override_fields() {
+        let json = r#"{
+            "start_runners_on_launch": false,
+            "notify_status_changes": true,
+            "notify_job_completions": true,
+            "scan_labels": ["self-hosted"],
+            "workspace_path": null,
+            "auto_scan": false,
+            "custom_runner_download_url": "https://example.invalid/actions-runner.tar.gz",
+            "artifact_results_url": "http://artifact-results.invalid:8007/"
+        }"#;
+        let prefs: Preferences = serde_json::from_str(json).unwrap();
+        let out: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&prefs).unwrap()).unwrap();
+        assert_eq!(
+            out["artifact_results_url"],
+            "http://artifact-results.invalid:8007/"
+        );
+        assert_eq!(
+            out["custom_runner_download_url"],
+            "https://example.invalid/actions-runner.tar.gz"
+        );
     }
 }

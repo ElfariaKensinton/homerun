@@ -110,6 +110,92 @@ fn find_git_install_dir() -> Option<std::path::PathBuf> {
     None
 }
 
+/// Environment variable read by the patched runner to redirect artifact uploads
+/// to a self-hosted Results API.
+pub const ARTIFACT_RESULTS_URL_ENV: &str = "ACTIONS_ARTIFACTS_RESULTS_URL_OVERRIDE";
+
+fn non_empty(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+}
+
+/// Read one variable from the user's login shell. A daemon started by launchd
+/// or by the desktop app does not inherit variables exported in shell startup
+/// files, so the process environment alone is not enough.
+#[cfg(unix)]
+pub fn resolve_shell_env_var(name: &str) -> Option<String> {
+    use std::process::Stdio;
+
+    const BEGIN: &str = "__HOMERUN_ENV_BEGIN__";
+    const END: &str = "__HOMERUN_ENV_END__";
+
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    let script = format!("printf '%s' \"{BEGIN}${{{name}}}{END}\"");
+
+    // Login shell first (.zprofile/.profile); then login + interactive so
+    // exports placed in .zshrc/.bashrc are picked up as well.
+    for flags in [&["-l", "-c"][..], &["-l", "-i", "-c"][..]] {
+        let output = std::process::Command::new(&shell)
+            .args(flags)
+            .arg(&script)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .ok();
+        let Some(output) = output else { continue };
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // Shell startup files may print noise; only trust the marked section.
+        if let Some(start) = stdout.rfind(BEGIN) {
+            let rest = &stdout[start + BEGIN.len()..];
+            if let Some(end) = rest.find(END) {
+                if let Some(value) = non_empty(Some(&rest[..end])) {
+                    return Some(value);
+                }
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+pub fn resolve_shell_env_var(_name: &str) -> Option<String> {
+    None
+}
+
+/// Cached artifact server URL exported in the user's shell, resolved once.
+pub static SHELL_ARTIFACT_RESULTS_URL: std::sync::LazyLock<Option<String>> =
+    std::sync::LazyLock::new(|| {
+        let value = resolve_shell_env_var(ARTIFACT_RESULTS_URL_ENV);
+        if let Some(ref v) = value {
+            tracing::info!("Resolved {ARTIFACT_RESULTS_URL_ENV} from shell: {v}");
+        }
+        value
+    });
+
+fn pick_artifact_results_url(
+    preference: Option<&str>,
+    process_env: Option<&str>,
+    shell_env: Option<&str>,
+) -> Option<String> {
+    non_empty(preference)
+        .or_else(|| non_empty(process_env))
+        .or_else(|| non_empty(shell_env))
+}
+
+/// Artifact server URL for runners. Precedence: the app preference, then the
+/// daemon's own environment, then the user's login shell environment.
+pub fn resolve_artifact_results_url(preference: Option<&str>) -> Option<String> {
+    let process_env = std::env::var(ARTIFACT_RESULTS_URL_ENV).ok();
+    pick_artifact_results_url(
+        preference,
+        process_env.as_deref(),
+        SHELL_ARTIFACT_RESULTS_URL.as_deref(),
+    )
+}
+
 /// Cached shell PATH resolved once at first use.
 pub static SHELL_PATH: std::sync::LazyLock<Option<String>> = std::sync::LazyLock::new(|| {
     let path = resolve_shell_path();
@@ -127,6 +213,23 @@ mod tests {
     fn shell_path_lazy_lock_is_accessible() {
         // Just verify the LazyLock can be dereferenced without panic.
         let _val: &Option<String> = &SHELL_PATH;
+    }
+
+    #[test]
+    fn artifact_results_url_precedence_is_preference_then_process_then_shell() {
+        assert_eq!(
+            pick_artifact_results_url(Some(" http://a/ "), Some("http://b/"), Some("http://c/")),
+            Some("http://a/".to_string())
+        );
+        assert_eq!(
+            pick_artifact_results_url(Some("  "), Some("http://b/"), Some("http://c/")),
+            Some("http://b/".to_string())
+        );
+        assert_eq!(
+            pick_artifact_results_url(None, None, Some("http://c/")),
+            Some("http://c/".to_string())
+        );
+        assert_eq!(pick_artifact_results_url(None, Some(""), None), None);
     }
 
     #[cfg(windows)]

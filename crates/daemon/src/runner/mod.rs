@@ -1595,8 +1595,12 @@ impl RunnerManager {
         let preferences = self.preferences.read().await.clone();
         let custom_runner_url = preferences.custom_runner_download_url.as_deref()
             .map(str::trim).filter(|url| !url.is_empty());
-        let artifact_results_url = preferences.artifact_results_url.as_deref()
-            .map(str::trim).filter(|url| !url.is_empty());
+        // App preference wins; otherwise fall back to the value exported in the
+        // daemon's or the user's login shell environment.
+        let artifact_results_url_owned = crate::platform::shell::resolve_artifact_results_url(
+            preferences.artifact_results_url.as_deref(),
+        );
+        let artifact_results_url = artifact_results_url_owned.as_deref();
 
         let already_configured = config.work_dir.join(".runner").exists()
             || config.work_dir.join(".runner_migrated").exists();
