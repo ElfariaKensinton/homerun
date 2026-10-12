@@ -23,6 +23,8 @@ function makePrefs(overrides?: Partial<Preferences>): Preferences {
     scan_labels: [],
     workspace_path: null,
     auto_scan: false,
+    watch_new_repositories: false,
+    auto_create_runner_for_new_repositories: false,
     custom_runner_download_url: null,
     artifact_results_url: null,
     ...overrides,
