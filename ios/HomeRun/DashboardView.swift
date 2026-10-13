@@ -115,4 +115,14 @@ struct DashboardView: View {
         guard let system = model.metrics?.system else { return "Host memory" }
         return "of \(formatBytes(system.memoryTotalBytes))"
     }
+
+    private var diskSummary: String {
+        guard let system = model.metrics?.system else { return "—" }
+        return formatBytes(system.diskUsedBytes)
+    }
+
+    private var diskDetail: String {
+        guard let system = model.metrics?.system else { return "Host disk" }
+        return "of \(formatBytes(system.diskTotalBytes))"
+    }
 }
