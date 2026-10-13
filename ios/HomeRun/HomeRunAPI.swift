@@ -10,9 +10,9 @@ enum HomeRunAPIError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidEndpoint:
-            return "Enter a valid HTTP or HTTPS endpoint, including its scheme."
+            return "Enter a hostname, hostname:port, HTTP URL, or HTTPS URL."
         case .insecureEndpoint:
-            return "Use HTTPS for Internet endpoints. HTTP is allowed only for loopback or private LAN endpoints."
+            return "Enter a valid hostname or HTTP/HTTPS URL."
         case .missingConnection:
             return "Connect to a HomeRun daemon first."
         case let .http(code, message):
@@ -29,45 +29,73 @@ private struct AnyEncodable: Encodable {
     func encode(to encoder: Encoder) throws { try encodeValue(encoder) }
 }
 
+private final class AcceptAnyTLSServerCertificateDelegate: NSObject, URLSessionDelegate {
+    func urlSession(
+        _ session: URLSession,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              let trust = challenge.protectionSpace.serverTrust else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+        // Deliberately accept any HTTPS server certificate: self-signed, expired,
+        // or hostname-mismatched. This bypasses normal TLS identity verification.
+        completionHandler(.useCredential, URLCredential(trust: trust))
+    }
+}
+
 final class HomeRunAPI {
     let baseUrl: URL
     private let token: String
     private let session: URLSession
+    private let sessionDelegate: AcceptAnyTLSServerCertificateDelegate
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
 
-    private static func isPrivateLANHost(_ host: String) -> Bool {
-        let normalized = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-        if normalized.hasSuffix(".local") {
-            return true
-        }
-        if normalized.contains(":") &&
-            (normalized.hasPrefix("fe80:") || normalized.hasPrefix("fc") || normalized.hasPrefix("fd")) {
-            return true
+    private static func normalizeEndpoint(_ rawEndpoint: String) -> String? {
+        let trimmed = rawEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if trimmed.contains("://") {
+            return trimmed
         }
 
-        let octets = normalized.split(separator: ".").compactMap { UInt8($0) }
-        guard octets.count == 4 else { return false }
-        let first = octets[0]
-        let second = octets[1]
-        return first == 10 ||
-            (first == 192 && second == 168) ||
-            (first == 172 && (16...31).contains(second)) ||
-            (first == 169 && second == 254)
+        // A bare machine name defaults to HomeRun's HTTP port; keep an explicit port.
+        var hostAndPort = trimmed
+        var hasPort = false
+        if trimmed.hasPrefix("[") {
+            if let closing = trimmed.firstIndex(of: "]") {
+                let suffix = trimmed[trimmed.index(after: closing)...]
+                if suffix.hasPrefix(":") {
+                    let port = suffix.dropFirst()
+                    hasPort = !port.isEmpty && port.allSatisfy { $0.isNumber }
+                } else if suffix.isEmpty {
+                    hostAndPort = trimmed + ":47831"
+                    hasPort = true
+                }
+            }
+        } else {
+            let pieces = trimmed.split(separator: ":", omittingEmptySubsequences: false)
+            hasPort = pieces.count == 2 && !pieces[1].isEmpty && pieces[1].allSatisfy { $0.isNumber }
+        }
+        if !hasPort {
+            hostAndPort += ":47831"
+        }
+        return "http://" + hostAndPort
     }
 
     init(endpoint: String, token: String) throws {
-        let value = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard var components = URLComponents(string: value),
+        guard let value = Self.normalizeEndpoint(endpoint),
+              var components = URLComponents(string: value),
               let scheme = components.scheme?.lowercased(),
               let host = components.host,
               !host.isEmpty
         else { throw HomeRunAPIError.invalidEndpoint }
 
-        let isLoopback = host == "localhost" || host == "127.0.0.1" || host == "::1"
-        let isPrivateLANHost = Self.isPrivateLANHost(host)
-        guard scheme == "https" || (scheme == "http" && (isLoopback || isPrivateLANHost)) else {
-            throw HomeRunAPIError.insecureEndpoint
+        guard scheme == "https" || scheme == "http" else {
+            throw HomeRunAPIError.invalidEndpoint
         }
         guard components.user == nil, components.password == nil else {
             throw HomeRunAPIError.invalidEndpoint
@@ -79,7 +107,9 @@ final class HomeRunAPI {
 
         self.baseUrl = url
         self.token = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.session = URLSession(configuration: .default)
+        let delegate = AcceptAnyTLSServerCertificateDelegate()
+        self.sessionDelegate = delegate
+        self.session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
         self.decoder = JSONDecoder()
         self.decoder.keyDecodingStrategy = .convertFromSnakeCase
         self.encoder = JSONEncoder()

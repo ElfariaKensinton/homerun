@@ -24,14 +24,14 @@ struct ConnectView: View {
                 }
 
                 Section("Daemon endpoint") {
-                    TextField("http://macname:47831 or https://host.tailnet.example", text: $endpoint)
+                    TextField("macbook or macbook:47831", text: $endpoint)
                         .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
                         .autocorrectionDisabled()
                     SecureField("Remote API token", text: $token)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    Text("HTTP, HTTPS, and Tailscale MagicDNS hostnames are supported. With direct HTTP, the bearer token and API traffic are unencrypted; use only on a trusted network. The token is stored in the iOS Keychain.")
+                    Text("Enter macbook or macbook:47831. Bare names use HTTP port 47831 automatically. HTTPS certificate checks are disabled. HTTP and untrusted HTTPS can expose the bearer token; use only on a trusted network. The token is stored in Keychain.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -76,7 +76,7 @@ struct ConnectView: View {
                     Link(destination: URL(string: "https://github.com/ElfariaKensinton/homerun/blob/feat/ios-app/ios/README.md")!) {
                         Label("Read connection and security setup", systemImage: "book")
                     }
-                    Text("For direct tailnet access, use http://<Mac-MagicDNS-name>:47831. For encrypted access, use a working Tailscale Serve HTTPS URL. Do not expose port 47831 to the public Internet.")
+                    Text("MagicDNS names work directly, for example macbook or macbook:47831. Never expose port 47831 to the public Internet.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
