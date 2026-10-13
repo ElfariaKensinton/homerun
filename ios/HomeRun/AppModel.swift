@@ -117,6 +117,8 @@ final class AppModel: ObservableObject {
         do {
             let health = try await api.health()
             daemonVersion = health.version ?? daemonVersion
+            isConnected = true
+            lastError = nil
         } catch {
             lastError = error.localizedDescription
             isConnected = false
