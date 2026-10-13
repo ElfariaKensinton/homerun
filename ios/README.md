@@ -6,19 +6,18 @@ A native SwiftUI companion for the HomeRun daemon. It covers runner status and l
 
 Open HomeRun.xcodeproj in Xcode 15 or newer. Select the HomeRun scheme and an iOS 17+ simulator or device, then build and run. No third-party Swift packages are required.
 
-## Secure remote access
+## Connect to the Mac over your LAN
 
-The existing daemon IPC listener remains the default and is unchanged. To allow the iOS app to reach it, start homerund with both environment variables below. The optional HTTP bridge **only binds to loopback** and rejects requests without a bearer token.
+The existing HomeRun **desktop GUI** starts the bundled `homerund` daemon and configures its authenticated HTTP bridge on `0.0.0.0:47831`. No separate host app or terminal command is required.
 
-    export HOMERUN_REMOTE_BIND=127.0.0.1:47831
-    export HOMERUN_REMOTE_TOKEN="$(openssl rand -hex 32)"
-    ./target/release/homerund
+1. Open HomeRun on the Apple Silicon Mac.
+2. Open **Settings → LAN Remote Access** and copy the LAN URL and bearer token.
+3. Keep the iPhone on the same trusted Wi-Fi/LAN.
+4. In HomeRun for iOS, enter the LAN URL (for example, `http://192.168.1.50:47831`) and token.
 
-Keep the generated token somewhere secure; enter it in the app's connection screen. Configure a trusted HTTPS reverse proxy or private-network tunnel (for example, a Tailscale HTTPS endpoint) to forward traffic to http://127.0.0.1:47831 and preserve the Authorization header. Enter that HTTPS endpoint in HomeRun for iOS. Do **not** bind the bridge to a LAN/WAN address or forward its raw HTTP port to the Internet.
+The bridge requires `Authorization: Bearer <token>` for every endpoint, including `/health`. The token is stored in `~/.homerun/remote-api-token` and should be treated as a password. If the daemon was already running before upgrading, restart it once from the Network Access section to apply the listener settings.
 
-The bridge is disabled unless both environment variables are set. The daemon refuses non-loopback bind addresses, missing/short tokens, or configuring only one variable. Requests to the bridge—including /health—require Authorization: Bearer <token>. The connection token is stored in the iOS Keychain; it is separate from the GitHub token held by HomeRun.
-
-For a daemon managed by launchd or another service manager, configure both environment variables in the service's launch configuration and restart the daemon. Starting the bridge in an interactive shell will not configure an already-running service.
+**LAN HTTP is not encrypted.** Use it only on a network you trust. Do not forward port 47831 to the public Internet. For access outside the LAN, use a VPN or an HTTPS tunnel and connect through its HTTPS endpoint instead.
 
 ## Feature notes
 
@@ -30,4 +29,4 @@ For a daemon managed by launchd or another service manager, configure both envir
 
 ## Security
 
-The remote token grants access to powerful operations, including stopping/deleting runners and shutting down the daemon. Use a high-entropy token, restrict access at the HTTPS tunnel/proxy, keep the phone protected, and rotate the token if the phone or token is lost. HTTPS is required by the app except for loopback development endpoints.
+The remote token grants access to powerful operations, including stopping/deleting runners and shutting down the daemon. Use a high-entropy token, restrict access at the HTTPS tunnel/proxy, keep the phone protected, and rotate the token if the phone or token is lost. HTTPS is required for public/remote endpoints; plain HTTP is accepted only for loopback or private-LAN hosts.
