@@ -408,7 +408,7 @@ struct RunnerDetailView: View {
 
 private struct EditRunnerConfigurationSheet: View {
     @EnvironmentObject private var model: AppModel
-    @Environment(\\.dismiss) private var dismiss
+    @Environment(\.dismiss) private var dismiss
 
     let runner: RunnerInfo
     @State private var labelsText: String
