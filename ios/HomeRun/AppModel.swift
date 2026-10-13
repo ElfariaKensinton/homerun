@@ -19,6 +19,8 @@ final class AppModel: ObservableObject {
     @Published var serviceStatus: ServiceStatusResponse?
     @Published var updateStatus: UpdateCheckResponse?
     @Published var activeScan = false
+    @Published var activeScanId: String?
+    @Published var scanProgressText: String?
 
     private(set) var api: HomeRunAPI?
     private var pollTask: Task<Void, Never>?
@@ -165,20 +167,71 @@ final class AppModel: ObservableObject {
 
     func scanRemote() async throws {
         guard let api else { throw HomeRunAPIError.missingConnection }
+        let scanId = UUID().uuidString
+        activeScanId = scanId
         activeScan = true
-        defer { activeScan = false }
-        _ = try await api.post("scan/remote", body: EmptyPayload(), as: [DiscoveredRepo].self)
+        scanProgressText = "Starting GitHub scan…"
+        defer {
+            activeScan = false
+            activeScanId = nil
+            scanProgressText = nil
+        }
+
+        let stream = api.streamScan(path: "scan/remote/stream", scanId: scanId, body: EmptyPayload())
+        for try await event in stream {
+            guard !Task.isCancelled else { return }
+            updateScanProgress(event)
+        }
         try await loadScanResults()
         await refresh()
     }
 
     func scanLocal(path: String) async throws {
         guard let api else { throw HomeRunAPIError.missingConnection }
+        let scanId = UUID().uuidString
+        activeScanId = scanId
         activeScan = true
-        defer { activeScan = false }
-        let request = ScanLocalRequest(path: path, labels: nil)
-        _ = try await api.post("scan/local", body: request, as: [DiscoveredRepo].self)
+        scanProgressText = "Starting host workspace scan…"
+        defer {
+            activeScan = false
+            activeScanId = nil
+            scanProgressText = nil
+        }
+
+        let request = ScanStreamLocalRequest(path: path)
+        let stream = api.streamScan(path: "scan/local/stream", scanId: scanId, body: request)
+        for try await event in stream {
+            guard !Task.isCancelled else { return }
+            updateScanProgress(event)
+        }
         try await loadScanResults()
+    }
+
+    func cancelScan() async throws {
+        guard let api, let scanId = activeScanId else { return }
+        let _: ScanCancelResponse = try await api.post(
+            "scan/cancel",
+            body: CancelScanRequest(scanId: scanId),
+            as: ScanCancelResponse.self
+        )
+        scanProgressText = "Cancellation requested…"
+    }
+
+    private func updateScanProgress(_ event: ScanProgressEvent) {
+        switch event.type {
+        case "started":
+            scanProgressText = "Scanning \(event.scanType ?? "repositories") · \(event.total ?? 0) to check"
+        case "checking":
+            scanProgressText = "Checking \(event.repo ?? "repository") (\(event.index ?? 0)/\(event.total ?? 0))"
+        case "found":
+            scanProgressText = "Found \(event.fullName ?? "a matching repository")"
+        case "done":
+            scanProgressText = "Finished · \(event.totalFound ?? 0) found · \(event.totalChecked ?? 0) checked"
+        case "cancelled":
+            scanProgressText = "Cancelled · \(event.checked ?? 0)/\(event.total ?? 0) checked"
+        default:
+            scanProgressText = "Scanning repositories…"
+        }
     }
 
     func createRunner(_ request: CreateRunnerRequest) async throws -> RunnerInfo {
