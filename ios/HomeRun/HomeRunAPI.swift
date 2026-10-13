@@ -208,6 +208,36 @@ final class HomeRunAPI {
         }
     }
 
+    func streamDaemonLogs(level: String? = nil) -> AsyncThrowingStream<DaemonLogEntry, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    var query: [URLQueryItem] = []
+                    if let level, level != "All" {
+                        query.append(URLQueryItem(name: "level", value: level.lowercased()))
+                    }
+                    let request = try makeRequest(path: "daemon/logs", method: "GET", query: query)
+                    let (bytes, response) = try await session.bytes(for: request)
+                    guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                        throw HomeRunAPIError.invalidResponse
+                    }
+                    for try await line in bytes.lines {
+                        guard line.hasPrefix("data:") else { continue }
+                        let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                        guard let data = payload.data(using: .utf8) else { continue }
+                        if let log = try? decoder.decode(DaemonLogEntry.self, from: data) {
+                            continuation.yield(log)
+                        }
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { @Sendable _ in task.cancel() }
+        }
+    }
+
     func streamLogs(runnerId: String) -> AsyncThrowingStream<LogEntry, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
