@@ -1483,6 +1483,7 @@ dependencies = [
  "tauri-plugin-shell",
  "tokio",
  "tower",
+ "uuid",
 ]
 
 [[package]]
