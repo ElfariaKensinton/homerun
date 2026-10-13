@@ -216,8 +216,7 @@ final class AppModel: ObservableObject {
 
     func deleteGroup(_ groupId: String) async throws -> GroupActionResponse {
         guard let api else { throw HomeRunAPIError.missingConnection }
-        let result = try await api.command("runners/groups/\(groupId)", method: "DELETE")
-        _ = result
+        try await api.command("runners/groups/\(groupId)", method: "DELETE")
         await refresh()
         return GroupActionResponse(groupId: groupId, results: [])
     }
