@@ -24,14 +24,14 @@ struct ConnectView: View {
                 }
 
                 Section("Daemon endpoint") {
-                    TextField("https://your-host.tailnet.example", text: $endpoint)
+                    TextField("http://192.168.1.50:47831", text: $endpoint)
                         .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
                         .autocorrectionDisabled()
                     SecureField("Remote API token", text: $token)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    Text("Use the HTTPS address of a trusted tunnel or reverse proxy. The token is stored in the iOS Keychain.")
+                    Text("On the same LAN, enter the URL shown in HomeRun desktop Settings → LAN Remote Access (for example http://192.168.1.50:47831). The token is stored in the iOS Keychain.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -76,7 +76,7 @@ struct ConnectView: View {
                     Link(destination: URL(string: "https://github.com/ElfariaKensinton/homerun/blob/feat/ios-app/ios/README.md")!) {
                         Label("Read connection and security setup", systemImage: "book")
                     }
-                    Text("The optional authenticated HTTP bridge is disabled by default. Enable it on the host, then connect through HTTPS; do not expose the bridge's raw HTTP port.")
+                    Text("The desktop app starts the authenticated listener on 0.0.0.0:47831. Plain HTTP is for trusted LAN use only; do not forward this port to the Internet. Use a VPN or HTTPS tunnel for off-LAN access.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
