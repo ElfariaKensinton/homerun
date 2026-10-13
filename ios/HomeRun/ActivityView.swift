@@ -85,10 +85,10 @@ struct ActivityView: View {
 
     private func levelColor(_ value: String) -> Color {
         switch value.lowercased() {
-        case "error": .red
-        case "warn", "warning": .orange
-        case "debug", "trace": .secondary
-        default: .primary
+        case "error": return .red
+        case "warn", "warning": return .orange
+        case "debug", "trace": return .secondary
+        default: return .primary
         }
     }
 }
