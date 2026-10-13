@@ -3,12 +3,19 @@ use std::sync::Arc;
 use crate::api::{service as api_service, updates as api_updates};
 use anyhow::Result;
 use axum::{
+    body::Body,
+    http::{header::AUTHORIZATION, Request, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{delete, get, patch, post},
+    extract::State,
     Json, Router,
 };
 #[cfg(unix)]
 use tokio::net::UnixListener;
-use tokio::sync::RwLock;
+use tokio::sync::{watch, RwLock};
+use tokio::net::TcpListener;
+use std::net::SocketAddr;
 
 use crate::api;
 use crate::auth::AuthManager;
@@ -158,6 +165,41 @@ pub fn create_router(state: AppState) -> Router {
         .with_state(state)
 }
 
+fn create_remote_router(state: AppState, token: Arc<str>) -> Router {
+    create_router(state).layer(middleware::from_fn_with_state(token, require_remote_token))
+}
+
+async fn require_remote_token(
+    State(token): State<Arc<str>>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let expected = format!("Bearer {}", token.as_ref());
+    let supplied = request
+        .headers()
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok());
+    let authorized = supplied
+        .map(|value| constant_time_equal(value.as_bytes(), expected.as_bytes()))
+        .unwrap_or(false);
+
+    if authorized {
+        next.run(request).await
+    } else {
+        (StatusCode::UNAUTHORIZED, "Missing or invalid remote API token").into_response()
+    }
+}
+
+fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter()
+        .zip(right.iter())
+        .fold(0_u8, |diff, (a, b)| diff | (a ^ b))
+        == 0
+}
+
 async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "status": "ok",
@@ -298,7 +340,55 @@ pub async fn serve(config: Config, daemon_logs: DaemonLogState) -> Result<()> {
     state.runner_manager.start_job_context_poller();
     crate::repository_watcher::start(state.clone());
 
-    let app = create_router(state);
+    let app = create_router(state.clone());
+
+    // Optional authenticated HTTP bridge for remote clients (for example, an
+    // iPhone reaching this loopback listener through a trusted HTTPS tunnel).
+    // It is deliberately disabled by default and never binds to a LAN/WAN IP.
+    let remote_bind = std::env::var("HOMERUN_REMOTE_BIND").ok();
+    let remote_token = std::env::var("HOMERUN_REMOTE_TOKEN").ok();
+    let (remote_shutdown_tx, _) = watch::channel(false);
+
+    match (remote_bind, remote_token) {
+        (None, None) => {}
+        (Some(_), None) | (None, Some(_)) => {
+            anyhow::bail!(
+                "HOMERUN_REMOTE_BIND and HOMERUN_REMOTE_TOKEN must be set together"
+            );
+        }
+        (Some(bind), Some(token)) => {
+            let address: SocketAddr = bind.parse().map_err(|_| {
+                anyhow::anyhow!("HOMERUN_REMOTE_BIND must be a valid socket address")
+            })?;
+            if !address.ip().is_loopback() {
+                anyhow::bail!(
+                    "HOMERUN_REMOTE_BIND must use a loopback address; expose it through a trusted HTTPS tunnel"
+                );
+            }
+            if token.len() < 32 {
+                anyhow::bail!("HOMERUN_REMOTE_TOKEN must be at least 32 characters");
+            }
+
+            let listener = TcpListener::bind(address).await?;
+            let remote_app = create_remote_router(state, Arc::<str>::from(token));
+            let mut shutdown_rx = remote_shutdown_tx.subscribe();
+            tracing::warn!(
+                "Authenticated remote API bridge listening on loopback {}",
+                address
+            );
+            tokio::spawn(async move {
+                let shutdown = async move {
+                    let _ = shutdown_rx.changed().await;
+                };
+                if let Err(error) = axum::serve(listener, remote_app)
+                    .with_graceful_shutdown(shutdown)
+                    .await
+                {
+                    tracing::error!("Remote API bridge stopped: {}", error);
+                }
+            });
+        }
+    }
 
     // --- Platform-specific: bind listener, serve, shutdown ---
 
@@ -347,6 +437,7 @@ pub async fn serve(config: Config, daemon_logs: DaemonLogState) -> Result<()> {
         // Named pipes are kernel objects — no file cleanup needed.
     }
 
+    let _ = remote_shutdown_tx.send(true);
     tracing::info!("Daemon shut down gracefully");
     Ok(())
 }
