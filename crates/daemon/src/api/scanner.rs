@@ -1,5 +1,5 @@
 use axum::{
-    extract::State,
+    extract::{Query, State},
     http::StatusCode,
     response::sse::{Event, Sse},
     Json,
@@ -97,14 +97,22 @@ pub struct LocalStreamRequest {
     pub path: PathBuf,
 }
 
+#[derive(Deserialize, Default)]
+pub struct ScanStreamQuery {
+    pub scan_id: Option<String>,
+}
+
 pub async fn scan_local_stream(
     State(state): State<AppState>,
+    Query(query): Query<ScanStreamQuery>,
     Json(body): Json<LocalStreamRequest>,
 ) -> Sse<impl futures::stream::Stream<Item = Result<Event, Infallible>>> {
     let labels = state.config.read().await.preferences.scan_labels.clone();
     let config = state.config.read().await.clone();
     let cancel = CancellationToken::new();
-    let _scan_state = state.scan_state.clone();
+    let scan_id = query.scan_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    state.scan_state.register(scan_id.clone(), cancel.clone()).await;
+    let scan_state = state.scan_state.clone();
 
     let (tx, rx) = mpsc::channel::<crate::scanner::ScanProgressEvent>(100);
 
@@ -123,6 +131,7 @@ pub async fn scan_local_stream(
             merged_results: results,
         };
         let _ = persistence::save_scan_results(&config.scan_results_path(), &scan_results).await;
+        scan_state.remove(&scan_id).await;
     });
 
     let stream = tokio_stream::wrappers::ReceiverStream::new(rx).map(|event| {
@@ -135,6 +144,7 @@ pub async fn scan_local_stream(
 
 pub async fn scan_remote_stream(
     State(state): State<AppState>,
+    Query(query): Query<ScanStreamQuery>,
 ) -> Result<Sse<impl futures::stream::Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)>
 {
     let token = state.auth.token().await;
@@ -142,6 +152,9 @@ pub async fn scan_remote_stream(
     let labels = state.config.read().await.preferences.scan_labels.clone();
     let config = state.config.read().await.clone();
     let cancel = CancellationToken::new();
+    let scan_id = query.scan_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    state.scan_state.register(scan_id.clone(), cancel.clone()).await;
+    let scan_state = state.scan_state.clone();
 
     let (tx, rx) = mpsc::channel::<crate::scanner::ScanProgressEvent>(100);
 
@@ -172,6 +185,7 @@ pub async fn scan_remote_stream(
             merged_results: merged,
         };
         let _ = persistence::save_scan_results(&config.scan_results_path(), &scan_results).await;
+        scan_state.remove(&scan_id).await;
     });
 
     let stream = tokio_stream::wrappers::ReceiverStream::new(rx).map(|event| {
