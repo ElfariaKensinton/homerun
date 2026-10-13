@@ -134,7 +134,7 @@ struct SettingsView: View {
                     Text("Docker runner support")
                     Spacer()
                     Text(model.dockerStatus?.available == true ? "Available" : (model.dockerStatus == nil ? "Unknown" : "Unavailable"))
-                        .foregroundStyle(model.dockerStatus?.available == true ? .green : .secondary)
+                        .foregroundStyle(model.dockerStatus?.available == true ? Color.green : Color.secondary)
                 }
                 if let dockerError = model.dockerStatus?.error, !dockerError.isEmpty {
                     Text(dockerError)
