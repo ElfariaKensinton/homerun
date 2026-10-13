@@ -274,21 +274,55 @@ struct RunnerDetailView: View {
                         Label(branch, systemImage: "arrow.branch").font(.caption).foregroundStyle(.secondary)
                     }
                     if let runUrl = entry.runUrl, let target = URL(string: runUrl) {
-                        HStack {
-                            Link("Open workflow", destination: target)
-                            Button("Re-run") {
-                                Task {
-                                    do {
-                                        try await model.rerunWorkflow(runnerId, runUrl: runUrl)
-                                        runStatuses[entry.id] = "Re-run requested"
-                                    } catch { errorMessage = error.localizedDescription }
+                        ViewThatFits(in: .horizontal) {
+                            HStack {
+                                Link("Open workflow", destination: target)
+                                Button("Check status") {
+                                    Task {
+                                        do {
+                                            let value = try await model.runStatus(runnerId, runUrl: runUrl)
+                                            runStatuses[entry.id] = "\\(value.status) · \\(value.conclusion ?? "no conclusion")"
+                                        } catch { errorMessage = error.localizedDescription }
+                                    }
+                                }
+                                Button("Re-run") {
+                                    Task {
+                                        do {
+                                            try await model.rerunWorkflow(runnerId, runUrl: runUrl)
+                                            runStatuses[entry.id] = "Re-run requested"
+                                        } catch { errorMessage = error.localizedDescription }
+                                    }
                                 }
                             }
-                            .buttonStyle(.bordered)
+                            HStack {
+                                Link("Open workflow", destination: target)
+                                Button("Status") {
+                                    Task {
+                                        do {
+                                            let value = try await model.runStatus(runnerId, runUrl: runUrl)
+                                            runStatuses[entry.id] = "\\(value.status) · \\(value.conclusion ?? "no conclusion")"
+                                        } catch { errorMessage = error.localizedDescription }
+                                    }
+                                }
+                                Button("Re-run") {
+                                    Task {
+                                        do {
+                                            try await model.rerunWorkflow(runnerId, runUrl: runUrl)
+                                            runStatuses[entry.id] = "Re-run requested"
+                                        } catch { errorMessage = error.localizedDescription }
+                                    }
+                                }
+                            }
                         }
+                        .buttonStyle(.bordered)
                         if let status = runStatuses[entry.id] {
                             Text(status).font(.caption).foregroundStyle(.secondary)
                         }
+                    }
+                    if let attempt = entry.latestAttempt {
+                        Text("Latest attempt #\\(attempt.attempt) · \\(attempt.succeeded ? "passed" : "failed") · \\(attempt.runnerName)")
+                            .font(.caption)
+                            .foregroundStyle(attempt.succeeded ? .green : .secondary)
                     }
                     if let error = entry.errorMessage, !error.isEmpty {
                         Text(error).font(.caption).foregroundStyle(.red)
