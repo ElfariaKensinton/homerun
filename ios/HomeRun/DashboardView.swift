@@ -36,6 +36,7 @@ struct DashboardView: View {
                     MetricTile(title: "Busy", value: "\(busyCount)", detail: "Executing jobs", symbol: "bolt.fill")
                     MetricTile(title: "CPU", value: String(format: "%.1f%%", model.metrics?.system.cpuPercent ?? 0), detail: "Host utilization", symbol: "cpu")
                     MetricTile(title: "Memory", value: memorySummary, detail: memoryDetail, symbol: "memorychip")
+                    MetricTile(title: "Disk", value: diskSummary, detail: diskDetail, symbol: "internaldrive")
                 }
 
                 if let daemon = model.metrics?.daemon {
