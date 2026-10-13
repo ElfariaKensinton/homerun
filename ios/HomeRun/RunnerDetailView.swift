@@ -281,7 +281,7 @@ struct RunnerDetailView: View {
                                     Task {
                                         do {
                                             let value = try await model.runStatus(runnerId, runUrl: runUrl)
-                                            runStatuses[entry.id] = "\\(value.status) · \\(value.conclusion ?? "no conclusion")"
+                                            runStatuses[entry.id] = "\(value.status) · \(value.conclusion ?? "no conclusion")"
                                         } catch { errorMessage = error.localizedDescription }
                                     }
                                 }
@@ -300,7 +300,7 @@ struct RunnerDetailView: View {
                                     Task {
                                         do {
                                             let value = try await model.runStatus(runnerId, runUrl: runUrl)
-                                            runStatuses[entry.id] = "\\(value.status) · \\(value.conclusion ?? "no conclusion")"
+                                            runStatuses[entry.id] = "\(value.status) · \(value.conclusion ?? "no conclusion")"
                                         } catch { errorMessage = error.localizedDescription }
                                     }
                                 }
@@ -320,7 +320,7 @@ struct RunnerDetailView: View {
                         }
                     }
                     if let attempt = entry.latestAttempt {
-                        Text("Latest attempt #\\(attempt.attempt) · \\(attempt.succeeded ? "passed" : "failed") · \\(attempt.runnerName)")
+                        Text("Latest attempt #\(attempt.attempt) · \(attempt.succeeded ? "passed" : "failed") · \(attempt.runnerName)")
                             .font(.caption)
                             .foregroundStyle(attempt.succeeded ? .green : .secondary)
                     }
