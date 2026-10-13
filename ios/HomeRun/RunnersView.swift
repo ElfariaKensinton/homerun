@@ -206,6 +206,15 @@ struct CreateRunnerSheet: View {
                         TextField("Environment (KEY=value per line)", text: $environmentText, axis: .vertical)
                             .lineLimit(2...6)
                             .font(.system(.footnote, design: .monospaced))
+                        if model.dockerStatus?.available == false {
+                            Label(model.dockerStatus?.error ?? "Docker is not available on the host.", systemImage: "exclamationmark.triangle")
+                                .font(.footnote)
+                                .foregroundStyle(.orange)
+                        } else if model.dockerStatus == nil {
+                            Text("Checking Docker availability on the host…")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     Stepper("Runner count: \(count)", value: $count, in: 1...10)
                     Text(count == 1 ? "Creates one runner." : "Creates a runner group of \(count) runners.")
@@ -232,7 +241,7 @@ struct CreateRunnerSheet: View {
                             Spacer()
                         }
                     }
-                    .disabled(creating || repository.isEmpty || (mode == "container" && containerImage.isEmpty))
+                    .disabled(creating || repository.isEmpty || (mode == "container" && (containerImage.isEmpty || model.dockerStatus?.available != true)))
                 }
             }
             .navigationTitle("New runner")
