@@ -111,7 +111,7 @@ export function Settings() {
   }, [preferences.artifact_results_url]);
 
   function updatePreference(key: keyof Preferences, value: boolean) {
-    updatePreferences({ [key]: value });
+    updatePreferences({ [key]: value } as Partial<Preferences>);
   }
 
   function updatePreferences(updates: Partial<Preferences>) {
