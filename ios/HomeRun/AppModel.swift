@@ -160,6 +160,18 @@ final class AppModel: ObservableObject {
         daemonLogs = try await api.get("daemon/logs/recent", query: query, as: [DaemonLogEntry].self)
     }
 
+    func daemonLogsStream(level: String?) -> AsyncThrowingStream<DaemonLogEntry, Error>? {
+        api?.streamDaemonLogs(level: level)
+    }
+
+    func appendDaemonLog(_ entry: DaemonLogEntry) {
+        guard !daemonLogs.contains(where: { $0.id == entry.id }) else { return }
+        daemonLogs.insert(entry, at: 0)
+        if daemonLogs.count > 2_000 {
+            daemonLogs.removeLast(daemonLogs.count - 2_000)
+        }
+    }
+
     func loadScanResults() async throws {
         guard let api else { throw HomeRunAPIError.missingConnection }
         scanResults = try await api.get("scan/results", as: ScanResults?.self)
