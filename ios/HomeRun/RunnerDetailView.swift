@@ -12,6 +12,7 @@ struct RunnerDetailView: View {
     @State private var stepLogs: StepLogsResponse?
     @State private var errorMessage: String?
     @State private var confirmDelete = false
+    @State private var showingEditConfiguration = false
     @State private var confirmClearHistory = false
     @State private var working = false
     @State private var runStatuses: [String: String] = [:]
@@ -104,9 +105,15 @@ struct RunnerDetailView: View {
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
                         Menu {
+                            Button("Edit configuration", systemImage: "slider.horizontal.3") { showingEditConfiguration = true }
                             Button("Refresh details", systemImage: "arrow.clockwise") { Task { await loadSection() } }
                             Button("Delete runner", systemImage: "trash", role: .destructive) { confirmDelete = true }
                         } label: { Image(systemName: "ellipsis.circle") }
+                    }
+                }
+                .sheet(isPresented: $showingEditConfiguration) {
+                    if let runner = model.runners.first(where: { $0.id == runnerId }) {
+                        EditRunnerConfigurationSheet(runner: runner)
                     }
                 }
                 .confirmationDialog("Delete this runner?", isPresented: $confirmDelete, titleVisibility: .visible) {
@@ -394,6 +401,95 @@ struct RunnerDetailView: View {
             catch { errorMessage = error.localizedDescription }
         default:
             break
+        }
+    }
+}
+
+
+private struct EditRunnerConfigurationSheet: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\\.dismiss) private var dismiss
+
+    let runner: RunnerInfo
+    @State private var labelsText: String
+    @State private var mode: String
+    @State private var saving = false
+    @State private var errorMessage: String?
+
+    init(runner: RunnerInfo) {
+        self.runner = runner
+        _labelsText = State(initialValue: runner.config.labels.joined(separator: ", "))
+        _mode = State(initialValue: runner.config.mode.lowercased())
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Runner") {
+                    LabeledContent("Name", value: runner.config.name)
+                    LabeledContent("Repository", value: runner.config.repository)
+                    LabeledContent("Working directory", value: runner.config.workDir)
+                }
+                Section("Editable configuration") {
+                    TextField("Labels, comma-separated", text: $labelsText)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    Picker("Execution mode", selection: $mode) {
+                        Text("App-managed").tag("app")
+                        Text("Background service").tag("service")
+                        Text("Docker container").tag("container")
+                    }
+                    .pickerStyle(.inline)
+                    if mode == "container" && runner.config.container == nil {
+                        Label("This runner has no stored container configuration. Switching modes does not create a container image configuration.", systemImage: "info.circle")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    if mode == "container" && model.dockerStatus?.available == false {
+                        Label("Docker is unavailable on the host.", systemImage: "exclamationmark.triangle")
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                    }
+                }
+                if let errorMessage {
+                    Section { Text(errorMessage).font(.footnote).foregroundStyle(.red) }
+                }
+                Section {
+                    Button {
+                        Task { await save() }
+                    } label: {
+                        HStack {
+                            Spacer()
+                            if saving { ProgressView().padding(.trailing, 6) }
+                            Text(saving ? "Saving…" : "Save configuration").fontWeight(.semibold)
+                            Spacer()
+                        }
+                    }
+                    .disabled(saving || (mode == "container" && runner.config.container == nil))
+                }
+            }
+            .navigationTitle("Edit runner")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func save() async {
+        let labels = labelsText
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        saving = true
+        defer { saving = false }
+        do {
+            try await model.updateRunner(runner.id, labels: labels, mode: mode)
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 }
