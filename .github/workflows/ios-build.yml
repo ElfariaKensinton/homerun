@@ -67,7 +67,7 @@ jobs:
         run: |
           set -euo pipefail
           DAEMON="$GITHUB_WORKSPACE/target/aarch64-apple-darwin/release/homerund"
-          GUI="$GITHUB_WORKSPACE/macos/HomeRunHost/.build/release/HomeRunHost"
+          GUI="$(swift build --package-path "$GITHUB_WORKSPACE/macos/HomeRunHost" --configuration release --show-bin-path)/HomeRunHost"
           APP="$GITHUB_WORKSPACE/HomeRun Host.app"
           CONTENTS="$APP/Contents"
 
