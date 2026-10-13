@@ -5,11 +5,11 @@ struct RunnerStateBadge: View {
 
     private var color: Color {
         switch state {
-        case .online: .green
-        case .busy: .orange
-        case .error: .red
-        case .offline: .secondary
-        case .creating, .registering, .stopping, .deleting: .indigo
+        case .online: return .green
+        case .busy: return .orange
+        case .error: return .red
+        case .offline: return .secondary
+        case .creating, .registering, .stopping, .deleting: return .indigo
         }
     }
 
