@@ -17,6 +17,10 @@ on:
       - "crates/daemon/src/server.rs"
   workflow_dispatch:
 
+concurrency:
+  group: ios-build-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
