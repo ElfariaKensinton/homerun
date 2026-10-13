@@ -12,7 +12,7 @@ enum HomeRunAPIError: LocalizedError {
         case .invalidEndpoint:
             return "Enter a valid HTTPS endpoint, including https://."
         case .insecureEndpoint:
-            return "Use HTTPS for remote connections. HTTP is allowed only for localhost development."
+            return "Use HTTPS for remote connections. HTTP is allowed only for localhost or a private LAN host."
         case .missingConnection:
             return "Connect to a HomeRun daemon first."
         case let .http(code, message):
@@ -21,6 +21,29 @@ enum HomeRunAPIError: LocalizedError {
             return "The daemon returned an unreadable response."
         }
     }
+}
+
+private func isTrustedLocalNetworkHost(_ host: String) -> Bool {
+    let normalized = host.lowercased()
+    if normalized == "localhost" || normalized == "::1" || normalized.hasSuffix(".local") {
+        return true
+    }
+
+    let pieces = normalized.split(separator: ".")
+    let octets = pieces.compactMap { Int($0) }
+    guard pieces.count == 4,
+          octets.count == 4,
+          octets.allSatisfy({ (0...255).contains($0) }) else {
+        return false
+    }
+
+    let first = octets[0]
+    let second = octets[1]
+    return first == 10
+        || first == 127
+        || (first == 169 && second == 254)
+        || (first == 172 && (16...31).contains(second))
+        || (first == 192 && second == 168)
 }
 
 private struct AnyEncodable: Encodable {
@@ -44,8 +67,7 @@ final class HomeRunAPI {
               !host.isEmpty
         else { throw HomeRunAPIError.invalidEndpoint }
 
-        let isLoopback = host == "localhost" || host == "127.0.0.1" || host == "::1"
-        guard scheme == "https" || (scheme == "http" && isLoopback) else {
+        guard scheme == "https" || (scheme == "http" && isTrustedLocalNetworkHost(host)) else {
             throw HomeRunAPIError.insecureEndpoint
         }
         guard components.user == nil, components.password == nil else {
