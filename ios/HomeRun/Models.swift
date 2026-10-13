@@ -30,24 +30,24 @@ enum RunnerState: String, Codable, CaseIterable {
 
     var title: String {
         switch self {
-        case .creating: "Creating"
-        case .registering: "Registering"
-        case .online: "Online"
-        case .busy: "Busy"
-        case .stopping: "Stopping"
-        case .offline: "Offline"
-        case .error: "Error"
-        case .deleting: "Deleting"
+        case .creating: return "Creating"
+        case .registering: return "Registering"
+        case .online: return "Online"
+        case .busy: return "Busy"
+        case .stopping: return "Stopping"
+        case .offline: return "Offline"
+        case .error: return "Error"
+        case .deleting: return "Deleting"
         }
     }
 
     var symbol: String {
         switch self {
-        case .online: "checkmark.circle.fill"
-        case .busy: "bolt.fill"
-        case .error: "exclamationmark.triangle.fill"
-        case .offline: "pause.circle.fill"
-        case .creating, .registering, .stopping, .deleting: "arrow.triangle.2.circlepath"
+        case .online: return "checkmark.circle.fill"
+        case .busy: return "bolt.fill"
+        case .error: return "exclamationmark.triangle.fill"
+        case .offline: return "pause.circle.fill"
+        case .creating, .registering, .stopping, .deleting: return "arrow.triangle.2.circlepath"
         }
     }
 }
