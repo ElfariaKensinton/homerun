@@ -26,7 +26,7 @@ permissions:
 
 jobs:
   build-ios:
-    name: Build HomeRun for iOS Simulator
+    name: Build unsigned HomeRun IPA
     runs-on: macos-15
     steps:
       - name: Check out source
@@ -35,16 +35,50 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
-      - name: Build app
+      - name: Build iOS device app without code signing
         run: |
+          set -euo pipefail
           xcodebuild \
             -project ios/HomeRun.xcodeproj \
             -scheme HomeRun \
-            -configuration Debug \
-            -sdk iphonesimulator \
-            -destination 'generic/platform=iOS Simulator' \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
             build
+
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+          APP_PATH="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/HomeRun.app"
+          IPA_ROOT="$RUNNER_TEMP/unsigned-ipa"
+          test -d "$APP_PATH"
+          rm -rf "$IPA_ROOT"
+          mkdir -p "$IPA_ROOT/Payload"
+          /usr/bin/ditto "$APP_PATH" "$IPA_ROOT/Payload/HomeRun.app"
+
+          # Fail the workflow if Xcode unexpectedly codesigned the app.
+          if /usr/bin/codesign -dv --verbose=2 "$IPA_ROOT/Payload/HomeRun.app" >"$RUNNER_TEMP/codesign-check.txt" 2>&1; then
+            cat "$RUNNER_TEMP/codesign-check.txt"
+            echo "Expected an unsigned app, but a code signature was found."
+            exit 1
+          fi
+
+          cd "$IPA_ROOT"
+          /usr/bin/zip -qry "$GITHUB_WORKSPACE/HomeRun-unsigned.ipa" Payload
+          /usr/bin/unzip -t "$GITHUB_WORKSPACE/HomeRun-unsigned.ipa"
+          /usr/bin/unzip -Z1 "$GITHUB_WORKSPACE/HomeRun-unsigned.ipa" | grep -Fx "Payload/HomeRun.app/Info.plist"
+
+      - name: Upload unsigned IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HomeRun-unsigned-IPA
+          path: HomeRun-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30
 
   build-daemon:
     name: Test daemon remote API
