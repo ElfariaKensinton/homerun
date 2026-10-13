@@ -39,6 +39,16 @@ struct RunnerDetailView: View {
                             if let current = runner.currentJob, !current.isEmpty {
                                 Label("Running: \(current)", systemImage: "bolt.fill")
                                     .font(.subheadline.weight(.medium))
+                                if let startedAt = runner.jobStartedAt {
+                                    Text("Started \\(formatTimestamp(startedAt))")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                if let estimate = runner.estimatedJobDurationSecs {
+                                    Text("Estimated job duration: \\(formatDuration(estimate))")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
                             }
                             if let context = runner.jobContext {
                                 HStack(spacing: 8) {
