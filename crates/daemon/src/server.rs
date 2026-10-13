@@ -552,3 +552,40 @@ mod tests {
         assert!(runners.is_empty());
     }
 }
+
+
+#[cfg(test)]
+mod remote_auth_tests {
+    use super::{create_remote_router, AppState};
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn remote_api_rejects_missing_token() {
+        let app = create_remote_router(AppState::new_test(), Arc::<str>::from("a".repeat(64)));
+        let response = app
+            .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn remote_api_accepts_valid_bearer_token() {
+        let token = "a".repeat(64);
+        let app = create_remote_router(AppState::new_test(), Arc::<str>::from(token.clone()));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+}
