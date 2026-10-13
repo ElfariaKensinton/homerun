@@ -9,6 +9,11 @@ use crate::client::{
 use crate::AppState;
 
 #[tauri::command]
+pub fn remote_access_info() -> Result<crate::remote_access::RemoteAccessInfo, String> {
+    crate::remote_access::info()
+}
+
+#[tauri::command]
 pub async fn start_daemon(app_handle: tauri::AppHandle) -> Result<bool, String> {
     use tauri_plugin_shell::ShellExt;
     use std::time::Duration;
@@ -30,11 +35,14 @@ pub async fn start_daemon(app_handle: tauri::AppHandle) -> Result<bool, String> 
         }
     }
 
-    // Spawn sidecar
+    // Spawn the bundled daemon with a persistent LAN API token.
+    let remote_token = crate::remote_access::ensure_token()?;
     let sidecar = app_handle
         .shell()
         .sidecar("homerund")
-        .map_err(|e| format!("Failed to find sidecar: {e}"))?;
+        .map_err(|e| format!("Failed to find sidecar: {e}"))?
+        .env("HOMERUN_REMOTE_BIND", crate::remote_access::BIND_ADDRESS)
+        .env("HOMERUN_REMOTE_TOKEN", remote_token);
 
     let (_rx, _child) = sidecar
         .spawn()
