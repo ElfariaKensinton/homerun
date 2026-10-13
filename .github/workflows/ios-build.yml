@@ -1,0 +1,43 @@
+name: iOS build
+
+on:
+  push:
+    branches: [feat/ios-app]
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios-build.yml"
+      - "crates/daemon/src/api/scanner.rs"
+      - "crates/daemon/src/server.rs"
+  pull_request:
+    branches: [master]
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios-build.yml"
+      - "crates/daemon/src/api/scanner.rs"
+      - "crates/daemon/src/server.rs"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-ios:
+    name: Build HomeRun for iOS Simulator
+    runs-on: macos-15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Build app
+        run: |
+          xcodebuild \
+            -project ios/HomeRun.xcodeproj \
+            -scheme HomeRun \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            build
