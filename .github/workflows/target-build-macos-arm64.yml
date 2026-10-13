@@ -2,6 +2,10 @@ name: Build HomeRun macOS ARM64
 run-name: Build HomeRun macOS ARM64 (${{ github.ref_name }})
 
 on:
+  # Keep an installable Apple Silicon build available for every master update;
+  # workflow_dispatch remains available for choosing the self-hosted runner.
+  push:
+    branches: [master]
   workflow_dispatch:
     inputs:
       runner_type:
