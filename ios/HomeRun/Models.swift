@@ -316,6 +316,28 @@ struct Preferences: Codable {
     var autoCreateRunnerForNewRepositories = false
     var customRunnerDownloadUrl: String?
     var artifactResultsUrl: String?
+
+    enum CodingKeys: String, CodingKey {
+        case startRunnersOnLaunch, notifyStatusChanges, notifyJobCompletions
+        case scanLabels, workspacePath, autoScan, watchNewRepositories
+        case autoCreateRunnerForNewRepositories, customRunnerDownloadUrl, artifactResultsUrl
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(startRunnersOnLaunch, forKey: .startRunnersOnLaunch)
+        try container.encode(notifyStatusChanges, forKey: .notifyStatusChanges)
+        try container.encode(notifyJobCompletions, forKey: .notifyJobCompletions)
+        try container.encode(scanLabels, forKey: .scanLabels)
+        try container.encode(workspacePath, forKey: .workspacePath)
+        try container.encode(autoScan, forKey: .autoScan)
+        try container.encode(watchNewRepositories, forKey: .watchNewRepositories)
+        try container.encode(autoCreateRunnerForNewRepositories, forKey: .autoCreateRunnerForNewRepositories)
+        // Explicit null clears the server's optional custom URL instead of
+        // reapplying its platform-specific default when the field is omitted.
+        try container.encode(customRunnerDownloadUrl, forKey: .customRunnerDownloadUrl)
+        try container.encode(artifactResultsUrl, forKey: .artifactResultsUrl)
+    }
 }
 
 struct DockerStatusResponse: Codable {
