@@ -257,6 +257,11 @@ struct ContainerEnvironmentLine {
     }
 }
 
+struct UpdateRunnerRequest: Encodable {
+    var labels: [String]?
+    var mode: String?
+}
+
 struct CreateRunnerRequest: Encodable {
     var repoFullName: String
     var name: String?
