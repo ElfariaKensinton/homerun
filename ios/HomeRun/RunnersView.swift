@@ -25,8 +25,14 @@ struct RunnersView: View {
                             group: group,
                             perform: { action in await performGroup(group.id, action: action) },
                             scale: { count in
-                                do { _ = try await model.scaleGroup(group.id, count: count) }
-                                catch { errorMessage = error.localizedDescription }
+                                do {
+                                    let result = try await model.scaleGroup(group.id, count: count)
+                                    if !result.skippedBusy.isEmpty {
+                                        errorMessage = "Scaled to \\(result.actualCount)/\\(result.targetCount). Busy runners were skipped: " + result.skippedBusy.joined(separator: ", ")
+                                    } else if result.actualCount != result.targetCount {
+                                        errorMessage = "Target was \\(result.targetCount), but \\(result.actualCount) runners are present."
+                                    }
+                                } catch { errorMessage = error.localizedDescription }
                             },
                             delete: {
                                 pendingDeleteGroup = group.id
@@ -90,8 +96,13 @@ struct RunnersView: View {
     }
 
     private func performGroup(_ groupId: String, action: String) async {
-        do { _ = try await model.groupAction(groupId, action: action) }
-        catch { errorMessage = error.localizedDescription }
+        do {
+            let result = try await model.groupAction(groupId, action: action)
+            let failures = result.results.filter { !$0.success }
+            if !failures.isEmpty {
+                errorMessage = failures.map { "\\($0.runnerId): \\($0.error ?? "operation failed")" }.joined(separator: "\\n")
+            }
+        } catch { errorMessage = error.localizedDescription }
     }
 }
 
