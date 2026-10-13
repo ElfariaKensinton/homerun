@@ -15,7 +15,7 @@ use axum::{
 use tokio::net::UnixListener;
 use tokio::sync::{watch, RwLock};
 use tokio::net::TcpListener;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use crate::api;
 use crate::auth::AuthManager;
@@ -163,6 +163,15 @@ pub fn create_router(state: AppState) -> Router {
         )
         .route("/daemon/shutdown", post(api::shutdown::shutdown_daemon))
         .with_state(state)
+}
+
+fn validate_remote_bind_address(address: SocketAddr) -> Result<()> {
+    let ip = address.ip();
+    if ip.is_loopback() || ip == IpAddr::V4(Ipv4Addr::UNSPECIFIED) {
+        Ok(())
+    } else {
+        anyhow::bail!("HOMERUN_REMOTE_BIND must use a loopback address or 0.0.0.0")
+    }
 }
 
 fn create_remote_router(state: AppState, token: Arc<str>) -> Router {
@@ -342,9 +351,8 @@ pub async fn serve(config: Config, daemon_logs: DaemonLogState) -> Result<()> {
 
     let app = create_router(state.clone());
 
-    // Optional authenticated HTTP bridge for remote clients (for example, an
-    // iPhone reaching this loopback listener through a trusted HTTPS tunnel).
-    // It is deliberately disabled by default and never binds to a LAN/WAN IP.
+    // Optional authenticated HTTP bridge for LAN clients such as the iOS app.
+    // HomeRun's desktop GUI starts the bundled daemon with a persistent bearer token.
     let remote_bind = std::env::var("HOMERUN_REMOTE_BIND").ok();
     let remote_token = std::env::var("HOMERUN_REMOTE_TOKEN").ok();
     let (remote_shutdown_tx, _) = watch::channel(false);
@@ -360,11 +368,7 @@ pub async fn serve(config: Config, daemon_logs: DaemonLogState) -> Result<()> {
             let address: SocketAddr = bind.parse().map_err(|_| {
                 anyhow::anyhow!("HOMERUN_REMOTE_BIND must be a valid socket address")
             })?;
-            if !address.ip().is_loopback() {
-                anyhow::bail!(
-                    "HOMERUN_REMOTE_BIND must use a loopback address; expose it through a trusted HTTPS tunnel"
-                );
-            }
+            validate_remote_bind_address(address)?;
             if token.len() < 32 {
                 anyhow::bail!("HOMERUN_REMOTE_TOKEN must be at least 32 characters");
             }
@@ -373,7 +377,7 @@ pub async fn serve(config: Config, daemon_logs: DaemonLogState) -> Result<()> {
             let remote_app = create_remote_router(state, Arc::<str>::from(token));
             let mut shutdown_rx = remote_shutdown_tx.subscribe();
             tracing::warn!(
-                "Authenticated remote API bridge listening on loopback {}",
+                "Authenticated remote API bridge listening on {}",
                 address
             );
             tokio::spawn(async move {
@@ -561,6 +565,16 @@ mod remote_auth_tests {
     use axum::http::{Request, StatusCode};
     use std::sync::Arc;
     use tower::ServiceExt;
+
+    #[test]
+    fn remote_bind_allows_wildcard_and_loopback_only() {
+        use super::validate_remote_bind_address;
+        use std::net::SocketAddr;
+
+        assert!(validate_remote_bind_address("0.0.0.0:47831".parse::<SocketAddr>().unwrap()).is_ok());
+        assert!(validate_remote_bind_address("127.0.0.1:47831".parse::<SocketAddr>().unwrap()).is_ok());
+        assert!(validate_remote_bind_address("192.168.1.20:47831".parse::<SocketAddr>().unwrap()).is_err());
+    }
 
     #[tokio::test]
     async fn remote_api_rejects_missing_token() {
