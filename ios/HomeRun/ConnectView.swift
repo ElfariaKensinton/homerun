@@ -24,14 +24,14 @@ struct ConnectView: View {
                 }
 
                 Section("Daemon endpoint") {
-                    TextField("https://your-host.tailnet.example", text: $endpoint)
+                    TextField("http://macname:47831 or https://host.tailnet.example", text: $endpoint)
                         .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
                         .autocorrectionDisabled()
                     SecureField("Remote API token", text: $token)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    Text("Use the HTTPS address of a trusted tunnel or reverse proxy. The token is stored in the iOS Keychain.")
+                    Text("HTTP, HTTPS, and Tailscale MagicDNS hostnames are supported. With direct HTTP, the bearer token and API traffic are unencrypted; use only on a trusted network. The token is stored in the iOS Keychain.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -76,7 +76,7 @@ struct ConnectView: View {
                     Link(destination: URL(string: "https://github.com/ElfariaKensinton/homerun/blob/feat/ios-app/ios/README.md")!) {
                         Label("Read connection and security setup", systemImage: "book")
                     }
-                    Text("The optional authenticated HTTP bridge is disabled by default. Enable it on the host, then connect through HTTPS; do not expose the bridge's raw HTTP port.")
+                    Text("For direct tailnet access, use http://<Mac-MagicDNS-name>:47831. For encrypted access, use a working Tailscale Serve HTTPS URL. Do not expose port 47831 to the public Internet.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

@@ -10,7 +10,7 @@ enum HomeRunAPIError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidEndpoint:
-            return "Enter a valid HTTPS endpoint, including https://."
+            return "Enter a valid HTTP or HTTPS endpoint, including its scheme."
         case .insecureEndpoint:
             return "Use HTTPS for Internet endpoints. HTTP is allowed only for loopback or private LAN endpoints."
         case .missingConnection:

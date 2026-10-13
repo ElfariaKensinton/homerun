@@ -2,21 +2,25 @@
 
 HomeRun for iOS is a native SwiftUI companion for controlling runners managed by the existing HomeRun desktop app. It does not run GitHub Actions jobs on the iPhone.
 
-## Connect over your LAN
+## Connect directly over Tailscale or HTTP
 
-1. On the Mac, open the existing **HomeRun** desktop app and go to **Settings → iPhone / LAN API**.
-2. Enable **LAN API**, select **Generate token**, and save the settings.
-3. Restart the daemon from the desktop app's **Daemon** page so it reads the new configuration.
-4. Find your Mac's Wi-Fi/Ethernet IP address in macOS Network settings (for example, `192.168.1.25`).
-5. In HomeRun for iOS, set the endpoint to `http://192.168.1.25:47831` using your Mac's actual IP, then enter the generated bearer token.
+The connection screen accepts both `http://` and `https://` endpoints, including Tailscale MagicDNS names.
 
-The listener binds to `0.0.0.0:47831`, so devices that can reach the Mac over the network can connect. The desktop app writes the configuration to `~/.homerun/remote-api.json`; on macOS the file is restricted to the account owner.
+For direct connection over Tailscale, enable **HomeRun → Settings → iPhone / LAN API** on the Mac, generate and save a bearer token, then restart the daemon from the **Daemon** page. On the iPhone (also connected to the same tailnet), enter the Mac's MagicDNS name and daemon port, for example:
 
-## Network security
+```text
+http://macname:47831
+```
+
+Replace `macname` with the actual MagicDNS hostname shown by Tailscale. You can also use the Mac's Tailscale IP, such as `http://100.x.y.z:47831`. Enter the generated token in the app.
+
+For encrypted access, use the HTTPS hostname reported by Tailscale Serve, provided Serve is configured to forward to the daemon listener. HTTPS certificate validation remains enabled; the app does not bypass TLS certificate checks.
+
+## Security warning
+
+HTTP is unencrypted. The bearer token and all API traffic can be observed by a device able to intercept that network path. Use direct HTTP only over a trusted private LAN or tailnet; never forward TCP 47831 to the public Internet. For access across untrusted networks, configure HTTPS through Tailscale Serve or a trusted reverse proxy and use its HTTPS URL.
 
 The API requires `Authorization: Bearer <token>` for every endpoint, including health checks. The token grants powerful permissions, including runner management and daemon shutdown. Keep it private and regenerate it if it may have been exposed.
-
-The LAN endpoint uses plain HTTP: neither the bearer token nor API traffic is encrypted in transit. Use it only on a trusted private network, keep macOS firewall rules restrictive, and **do not expose or port-forward TCP 47831 to the public Internet**. For access when the phone is away from the LAN, use a trusted HTTPS tunnel or reverse proxy and connect through its HTTPS URL instead.
 
 ## Feature notes
 
