@@ -300,7 +300,8 @@ struct CreateRunnerSheet: View {
                     container: container
                 )
                 let batch = try await model.createBatch(request)
-                resultMessage = "Group \(batch.groupId): \(batch.runners.count) created, \(batch.errors.count) errors."
+                let failures = batch.errors.map { "Runner \($0.index): \($0.error)" }
+                resultMessage = "Group \(batch.groupId): \(batch.runners.count) created, \(batch.errors.count) errors." + (failures.isEmpty ? "" : "\n" + failures.joined(separator: "\n"))
             }
         } catch {
             errorMessage = error.localizedDescription
