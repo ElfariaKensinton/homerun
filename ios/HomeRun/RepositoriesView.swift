@@ -57,7 +57,20 @@ struct RepositoriesView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
-                if model.activeScan { ProgressView() }
+                if model.activeScan {
+                    ProgressView()
+                    Text(model.scanProgressText ?? "Scanning…")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                    Button("Cancel scan", role: .destructive) {
+                        Task {
+                            do { try await model.cancelScan() }
+                            catch { errorMessage = error.localizedDescription }
+                        }
+                    }
+                    .disabled(model.activeScanId == nil)
+                }
                 if let message { Label(message, systemImage: "checkmark.circle").font(.footnote).foregroundStyle(.green) }
                 if let errorMessage { Label(errorMessage, systemImage: "exclamationmark.triangle").font(.footnote).foregroundStyle(.red) }
             }
