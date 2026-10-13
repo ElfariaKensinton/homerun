@@ -1,5 +1,6 @@
 mod client;
 mod commands;
+mod remote_access;
 mod tray;
 mod window;
 
@@ -143,25 +144,37 @@ pub fn run() {
                 }
             });
 
-            // -- Spawn daemon sidecar if not running --
+            // -- Spawn bundled daemon with authenticated LAN access --
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
+                let remote_token = match crate::remote_access::ensure_token() {
+                    Ok(token) => token,
+                    Err(error) => {
+                        eprintln!("Failed to initialize HomeRun LAN API token: {error}");
+                        return;
+                    }
+                };
+
                 let client = crate::client::DaemonClient::default_socket();
                 if client.health().await.is_ok() {
+                    // Do not interrupt an existing daemon on app launch. Settings
+                    // provides an explicit restart action to apply listener settings.
                     return;
                 }
 
                 use tauri_plugin_shell::ShellExt;
                 let sidecar = match handle.shell().sidecar("homerund") {
-                    Ok(s) => s,
-                    Err(e) => {
-                        eprintln!("Failed to find homerund sidecar: {e}");
+                    Ok(command) => command
+                        .env("HOMERUN_REMOTE_BIND", crate::remote_access::BIND_ADDRESS)
+                        .env("HOMERUN_REMOTE_TOKEN", remote_token),
+                    Err(error) => {
+                        eprintln!("Failed to find homerund sidecar: {error}");
                         return;
                     }
                 };
                 match sidecar.spawn() {
-                    Ok(_) => eprintln!("Daemon sidecar spawned"),
-                    Err(e) => eprintln!("Failed to spawn daemon: {e}"),
+                    Ok(_) => eprintln!("HomeRun daemon spawned with LAN API on {}", crate::remote_access::BIND_ADDRESS),
+                    Err(error) => eprintln!("Failed to spawn daemon: {error}"),
                 }
             });
 
@@ -187,6 +200,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::health_check,
+            commands::remote_access_info,
             commands::daemon_available,
             commands::start_daemon,
             commands::stop_daemon,
