@@ -56,6 +56,18 @@ export function Settings() {
     artifact_results_url: null,
   });
 
+  // Keep the latest optimistic value available to serialized saves. This avoids
+  // React state-updater side effects and out-of-order preference responses.
+  const preferencesRef = useRef<Preferences>(preferences);
+  const lastSavedPreferencesRef = useRef<Preferences | null>(null);
+  const preferencesSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const preferencesRevisionRef = useRef(0);
+  const [preferencesSaveError, setPreferencesSaveError] = useState<string | null>(null);
+
+  useEffect(() => {
+    preferencesRef.current = preferences;
+  }, [preferences]);
+
   const [customRunnerUrlInput, setCustomRunnerUrlInput] = useState("");
   const [artifactResultsUrlInput, setArtifactResultsUrlInput] = useState("");
   const [runtimeSettingsSaving, setRuntimeSettingsSaving] = useState(false);
@@ -69,8 +81,18 @@ export function Settings() {
       .catch(() => {});
     api
       .getPreferences()
-      .then(setPreferences)
-      .catch(() => {});
+      .then((loaded) => {
+        // Older background daemons may omit automation fields. Keep explicit
+        // defaults in the UI so the switches never render with undefined state.
+        const normalized = { ...preferencesRef.current, ...loaded };
+        preferencesRef.current = normalized;
+        lastSavedPreferencesRef.current = normalized;
+        setPreferences(normalized);
+      })
+      .catch((error) => {
+        console.error("Failed to load preferences:", error);
+        setPreferencesSaveError(`Could not load settings: ${String(error)}`);
+      });
   }, []);
 
   // Labels input local state (synced with preferences)
@@ -89,31 +111,55 @@ export function Settings() {
   }, [preferences.artifact_results_url]);
 
   function updatePreference(key: keyof Preferences, value: boolean) {
-    setPreferences((prev) => {
-      const updated = { ...prev, [key]: value };
-      api
-        .updatePreferences(updated)
-        .then(setPreferences)
-        .catch((e) => {
-          console.error("Failed to update preference:", e);
-          setPreferences(prev);
-        });
-      return updated;
-    });
+    updatePreferences({ [key]: value });
   }
 
   function updatePreferences(updates: Partial<Preferences>) {
-    setPreferences((prev) => {
-      const updated = { ...prev, ...updates };
-      api
-        .updatePreferences(updated)
-        .then(setPreferences)
-        .catch((e) => {
-          console.error("Failed to update preference:", e);
-          setPreferences(prev);
-        });
-      return updated;
-    });
+    const revision = ++preferencesRevisionRef.current;
+    const optimistic = { ...preferencesRef.current, ...updates };
+    preferencesRef.current = optimistic;
+    setPreferences(optimistic);
+    setPreferencesSaveError(null);
+
+    // Serialize writes. Each request sends the newest complete preferences
+    // object, so rapid toggle changes cannot overwrite one another out of order.
+    preferencesSaveQueueRef.current = preferencesSaveQueueRef.current
+      .catch(() => {})
+      .then(async () => {
+        const requestRevision = preferencesRevisionRef.current;
+        const target = preferencesRef.current;
+        const saved = await api.updatePreferences(target);
+
+        // A stale daemon silently drops unknown JSON fields. Detect that case
+        // instead of showing a switch as enabled when the daemon cannot honor it.
+        const automationKeys = [
+          "watch_new_repositories",
+          "auto_create_runner_for_new_repositories",
+        ] as const;
+        const unsupportedKey = automationKeys.find((key) => saved[key] !== target[key]);
+        if (unsupportedKey) {
+          throw new Error(
+            `The background daemon did not save "${unsupportedKey}". Quit HomeRun completely and reopen the updated app so its daemon is restarted.`,
+          );
+        }
+
+        const persisted = { ...target, ...saved };
+        lastSavedPreferencesRef.current = persisted;
+        if (requestRevision === preferencesRevisionRef.current) {
+          preferencesRef.current = persisted;
+          setPreferences(persisted);
+          setPreferencesSaveError(null);
+        }
+      })
+      .catch((error) => {
+        console.error("Failed to update preferences:", error);
+        setPreferencesSaveError(String(error));
+        if (revision === preferencesRevisionRef.current) {
+          const fallback = lastSavedPreferencesRef.current ?? preferencesRef.current;
+          preferencesRef.current = fallback;
+          setPreferences(fallback);
+        }
+      });
   }
 
   async function saveRunnerRuntimeSettings() {
@@ -688,6 +734,11 @@ export function Settings() {
       {/* Repository Automation */}
       <section style={{ marginBottom: 32 }}>
         <SectionHeader title="Repository Automation" />
+        {preferencesSaveError && (
+          <div className="error-banner" role="alert" style={{ marginBottom: 12 }}>
+            Could not save preferences: {preferencesSaveError}
+          </div>
+        )}
         <div className="card">
           <ToggleSetting
             label="Watch for new repositories"
@@ -967,14 +1018,16 @@ function ToggleSetting({
           {description}
         </p>
       </div>
-      <div
+      <button
+        type="button"
         role="switch"
+        aria-label={label}
         aria-checked={checked}
-        aria-disabled={disabled}
-        onClick={() => {
-          if (!disabled) onChange(!checked);
-        }}
+        disabled={disabled}
+        onClick={() => onChange(!checked)}
         style={{
+          appearance: "none",
+          padding: 0,
           width: 40,
           height: 22,
           background: checked ? "var(--accent-green)" : "var(--bg-tertiary)",
@@ -987,8 +1040,10 @@ function ToggleSetting({
           transition: "background 0.2s, border-color 0.2s",
         }}
       >
-        <div
+        <span
+          aria-hidden="true"
           style={{
+            display: "block",
             width: 18,
             height: 18,
             background: checked ? "white" : "var(--text-secondary)",
@@ -999,7 +1054,7 @@ function ToggleSetting({
             transition: "left 0.2s, background 0.2s",
           }}
         />
-      </div>
+      </button>
     </div>
   );
 }
