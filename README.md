@@ -62,6 +62,12 @@ HomeRun runs on **macOS** and **Windows**, with Linux support planned.
 - **Cross-platform** — macOS (launchd auto-start, native notifications) and Windows (Task Scheduler auto-start, named pipe IPC)
 - **Pre-commit hooks** — enforces `cargo fmt`, `cargo clippy`, conventional commits, and Prettier on every commit
 
+## iOS companion app
+
+A native SwiftUI companion for managing HomeRun from an iPhone or iPad is available in the [ios/](ios/README.md) directory on the feat/ios-app branch. It connects to the existing host daemon and includes runner lifecycle, groups and batch creation, repository discovery, logs, workflow history, resource metrics, GitHub sign-in, and preferences.
+
+For security, the daemon's HTTP bridge is **opt-in** and loopback-only; access it through a trusted HTTPS tunnel or private-network endpoint. See [iOS setup and remote access](ios/README.md) before connecting a device.
+
 ## Architecture
 
 ```
