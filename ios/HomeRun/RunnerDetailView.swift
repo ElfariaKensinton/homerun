@@ -33,7 +33,7 @@ struct RunnerDetailView: View {
                                 Spacer()
                                 RunnerStateBadge(state: runner.state)
                             }
-                            Text("Mode: \(runner.config.mode.capitalized) · PID: \(runner.pid.map(String.init) ?? "—")")
+                            Text("Mode: \(runner.config.mode.capitalized) · PID: \(runner.pid.map { String($0) } ?? "—")")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                             if let current = runner.currentJob, !current.isEmpty {
@@ -322,7 +322,7 @@ struct RunnerDetailView: View {
                     if let attempt = entry.latestAttempt {
                         Text("Latest attempt #\(attempt.attempt) · \(attempt.succeeded ? "passed" : "failed") · \(attempt.runnerName)")
                             .font(.caption)
-                            .foregroundStyle(attempt.succeeded ? .green : .secondary)
+                            .foregroundStyle(attempt.succeeded ? Color.green : Color.secondary)
                     }
                     if let error = entry.errorMessage, !error.isEmpty {
                         Text(error).font(.caption).foregroundStyle(.red)
