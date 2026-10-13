@@ -208,7 +208,54 @@ async fn health() -> Json<serde_json::Value> {
     }))
 }
 
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(default)]
+struct RemoteApiConfig {
+    enabled: bool,
+    bind_address: String,
+    token: String,
+}
+
+impl Default for RemoteApiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind_address: "0.0.0.0:47831".to_string(),
+            token: String::new(),
+        }
+    }
+}
+
+fn load_remote_api_config(path: &std::path::Path) -> Result<RemoteApiConfig> {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => Ok(serde_json::from_str(&contents)?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let bind = std::env::var("HOMERUN_REMOTE_BIND")
+                .ok()
+                .filter(|value| !value.trim().is_empty());
+            let token = std::env::var("HOMERUN_REMOTE_TOKEN")
+                .ok()
+                .filter(|value| !value.trim().is_empty());
+            match (bind, token) {
+                (None, None) => Ok(RemoteApiConfig::default()),
+                (Some(bind_address), Some(token)) => Ok(RemoteApiConfig {
+                    enabled: true,
+                    bind_address,
+                    token,
+                }),
+                _ => anyhow::bail!(
+                    "HOMERUN_REMOTE_BIND and HOMERUN_REMOTE_TOKEN must be set together"
+                ),
+            }
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 pub async fn serve(config: Config, daemon_logs: DaemonLogState) -> Result<()> {
+    let remote_config_path = config.base_dir().join("remote-api.json");
+
     // --- Platform-specific: extract IPC address & check for running daemon ---
 
     #[cfg(unix)]
@@ -342,52 +389,37 @@ pub async fn serve(config: Config, daemon_logs: DaemonLogState) -> Result<()> {
 
     let app = create_router(state.clone());
 
-    // Optional authenticated HTTP bridge for remote clients (for example, an
-    // iPhone reaching this loopback listener through a trusted HTTPS tunnel).
-    // It is deliberately disabled by default and never binds to a LAN/WAN IP.
-    let remote_bind = std::env::var("HOMERUN_REMOTE_BIND").ok();
-    let remote_token = std::env::var("HOMERUN_REMOTE_TOKEN").ok();
+    // Optional authenticated LAN API controlled by the existing HomeRun GUI.
+    // Every endpoint, including health checks, is protected by bearer-token middleware.
+    let remote_config = load_remote_api_config(&remote_config_path)?;
     let (remote_shutdown_tx, _) = watch::channel(false);
 
-    match (remote_bind, remote_token) {
-        (None, None) => {}
-        (Some(_), None) | (None, Some(_)) => {
-            anyhow::bail!(
-                "HOMERUN_REMOTE_BIND and HOMERUN_REMOTE_TOKEN must be set together"
-            );
+    if remote_config.enabled {
+        let address: SocketAddr = remote_config.bind_address.parse().map_err(|_| {
+            anyhow::anyhow!("Remote API bind_address must be a valid socket address")
+        })?;
+        if remote_config.token.len() < 32 {
+            anyhow::bail!("Remote API bearer token must be at least 32 characters");
         }
-        (Some(bind), Some(token)) => {
-            let address: SocketAddr = bind.parse().map_err(|_| {
-                anyhow::anyhow!("HOMERUN_REMOTE_BIND must be a valid socket address")
-            })?;
-            if !address.ip().is_loopback() {
-                anyhow::bail!(
-                    "HOMERUN_REMOTE_BIND must use a loopback address; expose it through a trusted HTTPS tunnel"
-                );
-            }
-            if token.len() < 32 {
-                anyhow::bail!("HOMERUN_REMOTE_TOKEN must be at least 32 characters");
-            }
 
-            let listener = TcpListener::bind(address).await?;
-            let remote_app = create_remote_router(state, Arc::<str>::from(token));
-            let mut shutdown_rx = remote_shutdown_tx.subscribe();
-            tracing::warn!(
-                "Authenticated remote API bridge listening on loopback {}",
-                address
-            );
-            tokio::spawn(async move {
-                let shutdown = async move {
-                    let _ = shutdown_rx.changed().await;
-                };
-                if let Err(error) = axum::serve(listener, remote_app)
-                    .with_graceful_shutdown(shutdown)
-                    .await
-                {
-                    tracing::error!("Remote API bridge stopped: {}", error);
-                }
-            });
-        }
+        let listener = TcpListener::bind(address).await?;
+        let remote_app = create_remote_router(state, Arc::<str>::from(remote_config.token));
+        let mut shutdown_rx = remote_shutdown_tx.subscribe();
+        tracing::warn!(
+            "Authenticated remote API listening on {}. Plain HTTP is unencrypted; keep it on a trusted network.",
+            address
+        );
+        tokio::spawn(async move {
+            let shutdown = async move {
+                let _ = shutdown_rx.changed().await;
+            };
+            if let Err(error) = axum::serve(listener, remote_app)
+                .with_graceful_shutdown(shutdown)
+                .await
+            {
+                tracing::error!("Remote API stopped: {}", error);
+            }
+        });
     }
 
     // --- Platform-specific: bind listener, serve, shutdown ---

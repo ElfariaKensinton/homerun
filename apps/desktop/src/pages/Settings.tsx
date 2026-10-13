@@ -4,6 +4,7 @@ import { api } from "../api/commands";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import type { DeviceFlowResponse, Preferences } from "../api/types";
+import type { RemoteApiSettings } from "../api/commands";
 
 type DeviceFlowState =
   | { stage: "idle" }
@@ -73,6 +74,52 @@ export function Settings() {
   const [runtimeSettingsSaving, setRuntimeSettingsSaving] = useState(false);
   const [runtimeSettingsMessage, setRuntimeSettingsMessage] = useState<string | null>(null);
   const [runtimeSettingsError, setRuntimeSettingsError] = useState(false);
+
+  // LAN listener controls for the existing HomeRun desktop GUI.
+  const [remoteApiSettings, setRemoteApiSettings] = useState<RemoteApiSettings>({
+    enabled: false,
+    bind_address: "0.0.0.0:47831",
+    token: "",
+  });
+  const [remoteApiSaving, setRemoteApiSaving] = useState(false);
+  const [remoteApiMessage, setRemoteApiMessage] = useState<string | null>(null);
+  const [remoteApiError, setRemoteApiError] = useState<string | null>(null);
+  const [remoteApiTokenVisible, setRemoteApiTokenVisible] = useState(false);
+
+  useEffect(() => {
+    api.getRemoteApiSettings()
+      .then(setRemoteApiSettings)
+      .catch((error) => setRemoteApiError(String(error)));
+  }, []);
+
+  const generateRemoteApiToken = async () => {
+    try {
+      const generated = await api.generateRemoteApiToken();
+      setRemoteApiSettings((current) => ({ ...current, token: generated }));
+      setRemoteApiError(null);
+      setRemoteApiMessage("New token generated. Save settings to keep it.");
+    } catch (error) {
+      setRemoteApiError(String(error));
+    }
+  };
+
+  const saveRemoteApiSettings = async () => {
+    setRemoteApiSaving(true);
+    setRemoteApiError(null);
+    setRemoteApiMessage(null);
+    try {
+      const saved = await api.saveRemoteApiSettings(
+        remoteApiSettings.enabled,
+        remoteApiSettings.token,
+      );
+      setRemoteApiSettings(saved);
+      setRemoteApiMessage("Saved. Restart the daemon from the Daemon page to apply changes.");
+    } catch (error) {
+      setRemoteApiError(String(error));
+    } finally {
+      setRemoteApiSaving(false);
+    }
+  };
 
   // Check launch-at-login status on mount
   useEffect(() => {
@@ -620,6 +667,60 @@ export function Settings() {
             checked={preferences.start_runners_on_launch}
             onChange={(checked) => updatePreference("start_runners_on_launch", checked)}
           />
+        </div>
+      </section>
+
+      {/* iPhone / LAN API */}
+      <section style={{ marginBottom: 32 }}>
+        <SectionHeader title="iPhone / LAN API" />
+        <div className="card">
+          <ToggleSetting
+            label="Enable LAN API"
+            description="Listen on 0.0.0.0:47831 so the iPhone and other devices on your local network can connect."
+            checked={remoteApiSettings.enabled}
+            onChange={(enabled) => setRemoteApiSettings((current) => ({ ...current, enabled }))}
+          />
+          <Divider />
+          <div style={{ padding: "8px 0" }}>
+            <div style={{ fontWeight: 500, marginBottom: 2, fontSize: 14 }}>Bearer token</div>
+            <p className="text-muted" style={{ margin: 0, fontSize: 12, marginBottom: 8 }}>
+              Generate a token and enter it in HomeRun for iOS. The token grants runner-management and daemon-shutdown access.
+            </p>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <input
+                type={remoteApiTokenVisible ? "text" : "password"}
+                aria-label="LAN API bearer token"
+                value={remoteApiSettings.token}
+                onChange={(event) => setRemoteApiSettings((current) => ({ ...current, token: event.target.value }))}
+                autoComplete="off"
+                spellCheck={false}
+                style={{ flex: "1 1 360px", minWidth: 0 }}
+              />
+              <button type="button" className="btn btn-secondary" onClick={() => setRemoteApiTokenVisible((visible) => !visible)}>
+                {remoteApiTokenVisible ? "Hide token" : "Show token"}
+              </button>
+              <button type="button" className="btn btn-secondary" onClick={() => void generateRemoteApiToken()}>
+                Generate token
+              </button>
+            </div>
+          </div>
+          <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5, marginBottom: 12 }}>
+            Bind address: <code>{remoteApiSettings.bind_address}</code>. Enter <code>http://MAC-LAN-IP:47831</code> in the iOS app. Save and restart the daemon from the Daemon page to apply changes. The token is stored in <code>~/.homerun/remote-api.json</code> with owner-only permissions on macOS.
+            <br />
+            Plain HTTP does not encrypt the token or API traffic. Use this only on a trusted private network; never forward port 47831 to the public Internet.
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => void saveRemoteApiSettings()}
+              disabled={remoteApiSaving}
+            >
+              {remoteApiSaving ? "Saving..." : "Save LAN API settings"}
+            </button>
+            {remoteApiMessage && <span role="status" style={{ fontSize: 12, color: "var(--text-secondary)" }}>{remoteApiMessage}</span>}
+          </div>
+          {remoteApiError && <div className="error-banner" role="alert" style={{ marginTop: 12 }}>{remoteApiError}</div>}
         </div>
       </section>
 

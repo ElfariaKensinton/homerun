@@ -1,5 +1,6 @@
 mod client;
 mod commands;
+mod remote_api;
 mod tray;
 mod window;
 
@@ -188,6 +189,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::health_check,
             commands::daemon_available,
+            commands::get_remote_api_settings,
+            commands::save_remote_api_settings,
+            commands::generate_remote_api_token,
             commands::start_daemon,
             commands::stop_daemon,
             commands::restart_daemon,

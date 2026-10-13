@@ -12,7 +12,7 @@ enum HomeRunAPIError: LocalizedError {
         case .invalidEndpoint:
             return "Enter a valid HTTPS endpoint, including https://."
         case .insecureEndpoint:
-            return "Use HTTPS for remote connections. HTTP is allowed only for localhost development."
+            return "Use HTTPS for Internet endpoints. HTTP is allowed only for loopback or private LAN endpoints."
         case .missingConnection:
             return "Connect to a HomeRun daemon first."
         case let .http(code, message):
@@ -36,6 +36,26 @@ final class HomeRunAPI {
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
 
+    private static func isPrivateLANHost(_ host: String) -> Bool {
+        let normalized = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        if normalized.hasSuffix(".local") {
+            return true
+        }
+        if normalized.contains(":") &&
+            (normalized.hasPrefix("fe80:") || normalized.hasPrefix("fc") || normalized.hasPrefix("fd")) {
+            return true
+        }
+
+        let octets = normalized.split(separator: ".").compactMap { UInt8($0) }
+        guard octets.count == 4 else { return false }
+        let first = octets[0]
+        let second = octets[1]
+        return first == 10 ||
+            (first == 192 && second == 168) ||
+            (first == 172 && (16...31).contains(second)) ||
+            (first == 169 && second == 254)
+    }
+
     init(endpoint: String, token: String) throws {
         let value = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         guard var components = URLComponents(string: value),
@@ -45,7 +65,8 @@ final class HomeRunAPI {
         else { throw HomeRunAPIError.invalidEndpoint }
 
         let isLoopback = host == "localhost" || host == "127.0.0.1" || host == "::1"
-        guard scheme == "https" || (scheme == "http" && isLoopback) else {
+        let isPrivateLANHost = Self.isPrivateLANHost(host)
+        guard scheme == "https" || (scheme == "http" && (isLoopback || isPrivateLANHost)) else {
             throw HomeRunAPIError.insecureEndpoint
         }
         guard components.user == nil, components.password == nil else {

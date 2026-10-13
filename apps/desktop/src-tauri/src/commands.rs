@@ -9,6 +9,21 @@ use crate::client::{
 use crate::AppState;
 
 #[tauri::command]
+pub fn get_remote_api_settings() -> Result<crate::remote_api::RemoteApiSettings, String> {
+    crate::remote_api::load()
+}
+
+#[tauri::command]
+pub fn save_remote_api_settings(enabled: bool, token: Option<String>) -> Result<crate::remote_api::RemoteApiSettings, String> {
+    crate::remote_api::save(enabled, token)
+}
+
+#[tauri::command]
+pub fn generate_remote_api_token() -> Result<String, String> {
+    crate::remote_api::generate_token()
+}
+
+#[tauri::command]
 pub async fn start_daemon(app_handle: tauri::AppHandle) -> Result<bool, String> {
     use tauri_plugin_shell::ShellExt;
     use std::time::Duration;

@@ -1,33 +1,26 @@
 # HomeRun for iOS
 
-A native SwiftUI companion for the HomeRun daemon. It covers runner status and lifecycle, single and batch creation, group scaling/actions, repository discovery, GitHub authentication, metrics, live logs, job steps/history/re-runs, preferences, service controls, Docker status, and update checks.
+HomeRun for iOS is a native SwiftUI companion for controlling runners managed by the existing HomeRun desktop app. It does not run GitHub Actions jobs on the iPhone.
 
-## Open and build
+## Connect over your LAN
 
-Open HomeRun.xcodeproj in Xcode 15 or newer. Select the HomeRun scheme and an iOS 17+ simulator or device, then build and run. No third-party Swift packages are required.
+1. On the Mac, open the existing **HomeRun** desktop app and go to **Settings → iPhone / LAN API**.
+2. Enable **LAN API**, select **Generate token**, and save the settings.
+3. Restart the daemon from the desktop app's **Daemon** page so it reads the new configuration.
+4. Find your Mac's Wi-Fi/Ethernet IP address in macOS Network settings (for example, `192.168.1.25`).
+5. In HomeRun for iOS, set the endpoint to `http://192.168.1.25:47831` using your Mac's actual IP, then enter the generated bearer token.
 
-## Secure remote access
+The listener binds to `0.0.0.0:47831`, so devices that can reach the Mac over the network can connect. The desktop app writes the configuration to `~/.homerun/remote-api.json`; on macOS the file is restricted to the account owner.
 
-The existing daemon IPC listener remains the default and is unchanged. To allow the iOS app to reach it, start homerund with both environment variables below. The optional HTTP bridge **only binds to loopback** and rejects requests without a bearer token.
+## Network security
 
-    export HOMERUN_REMOTE_BIND=127.0.0.1:47831
-    export HOMERUN_REMOTE_TOKEN="$(openssl rand -hex 32)"
-    ./target/release/homerund
+The API requires `Authorization: Bearer <token>` for every endpoint, including health checks. The token grants powerful permissions, including runner management and daemon shutdown. Keep it private and regenerate it if it may have been exposed.
 
-Keep the generated token somewhere secure; enter it in the app's connection screen. Configure a trusted HTTPS reverse proxy or private-network tunnel (for example, a Tailscale HTTPS endpoint) to forward traffic to http://127.0.0.1:47831 and preserve the Authorization header. Enter that HTTPS endpoint in HomeRun for iOS. Do **not** bind the bridge to a LAN/WAN address or forward its raw HTTP port to the Internet.
-
-The bridge is disabled unless both environment variables are set. The daemon refuses non-loopback bind addresses, missing/short tokens, or configuring only one variable. Requests to the bridge—including /health—require Authorization: Bearer <token>. The connection token is stored in the iOS Keychain; it is separate from the GitHub token held by HomeRun.
-
-For a daemon managed by launchd or another service manager, configure both environment variables in the service's launch configuration and restart the daemon. Starting the bridge in an interactive shell will not configure an already-running service.
+The LAN endpoint uses plain HTTP: neither the bearer token nor API traffic is encrypted in transit. Use it only on a trusted private network, keep macOS firewall rules restrictive, and **do not expose or port-forward TCP 47831 to the public Internet**. For access when the phone is away from the LAN, use a trusted HTTPS tunnel or reverse proxy and connect through its HTTPS URL instead.
 
 ## Feature notes
 
-- The app manages runners on the Mac/Windows host that runs homerund; it does not execute GitHub Actions jobs on the iPhone.
-- Remote repository scans, runner operations, metrics, daemon logs, history, and preferences use the daemon API.
-- Local workspace scans accept a path on the **host machine**, not a path on the iPhone.
-- Starting a daemon that is not running, changing operating-system login settings, and some service-manager operations remain host/OS-level tasks. Service install/uninstall endpoints are exposed for compatibility and may report host-permission or platform errors.
-- GitHub Device Flow is preferred; a PAT entry is also available. The PAT is sent directly to the daemon and is not saved by the iOS app.
-
-## Security
-
-The remote token grants access to powerful operations, including stopping/deleting runners and shutting down the daemon. Use a high-entropy token, restrict access at the HTTPS tunnel/proxy, keep the phone protected, and rotate the token if the phone or token is lost. HTTPS is required by the app except for loopback development endpoints.
+- Runner operations, repository discovery, logs, workflow history, metrics, and preferences run on the Mac host.
+- Local workspace scans accept a path on the Mac, not a path on the iPhone.
+- Some operating-system service actions remain host-side operations.
+- GitHub Device Flow is preferred; if you use a PAT, it is sent to the daemon and is not saved by the iOS app.

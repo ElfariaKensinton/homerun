@@ -23,6 +23,12 @@ import type {
   TrayIconState,
 } from "./types";
 
+export type RemoteApiSettings = {
+  enabled: boolean;
+  bind_address: string;
+  token: string;
+};
+
 export const api = {
   // Auth
   getAuthStatus: () => invoke<AuthStatus>("auth_status"),
@@ -92,6 +98,10 @@ export const api = {
   startDaemon: () => invoke<boolean>("start_daemon"),
   stopDaemon: () => invoke<boolean>("stop_daemon"),
   restartDaemon: () => invoke<boolean>("restart_daemon"),
+  getRemoteApiSettings: () => invoke<RemoteApiSettings>("get_remote_api_settings"),
+  saveRemoteApiSettings: (enabled: boolean, token: string) =>
+    invoke<RemoteApiSettings>("save_remote_api_settings", { enabled, token }),
+  generateRemoteApiToken: () => invoke<string>("generate_remote_api_token"),
 
   // Batch / Groups
   createBatch: (req: CreateBatchRequest) => invoke<BatchCreateResponse>("create_batch", { req }),

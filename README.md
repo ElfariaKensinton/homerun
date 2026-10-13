@@ -62,19 +62,15 @@ HomeRun runs on **macOS** and **Windows**, with Linux support planned.
 - **Cross-platform** — macOS (launchd auto-start, native notifications) and Windows (Task Scheduler auto-start, named pipe IPC)
 - **Pre-commit hooks** — enforces `cargo fmt`, `cargo clippy`, conventional commits, and Prettier on every commit
 
-## Native Apple Silicon macOS host app
+## iOS companion app and LAN API
 
-The [`macos/HomeRunHost`](macos/HomeRunHost/) directory contains a native SwiftUI GUI for starting and stopping the bundled `homerund` daemon and viewing its logs. The daemon's authenticated HTTP bridge remains bound to `127.0.0.1`. The GUI stores its API token in macOS Keychain and can configure Tailscale Serve for private HTTPS access from an iPhone on the same tailnet.
+The iOS companion in [ios/](ios/README.md) connects to the daemon bundled with the existing HomeRun desktop GUI. There is no separate “HomeRun Host” application.
 
-To download the Apple Silicon build, open the [iOS and macOS Actions workflow](https://github.com/ElfariaKensinton/homerun/actions/workflows/ios-build.yml) and download the `HomeRun-Host-macos-arm64` artifact (DMG and ZIP). The standalone daemon is available as `homerund-macos-arm64`; the iOS app is published separately as `HomeRun-unsigned-IPA`.
+To enable LAN access, open **HomeRun → Settings → iPhone / LAN API**, enable the listener, generate and save a bearer token, then restart the daemon from the existing **Daemon** page. The listener binds to `0.0.0.0:47831`; every API endpoint requires the bearer token. In the iOS app, use `http://<Mac-LAN-IP>:47831` and the generated token.
 
-These CI artifacts are not Developer ID signed or notarized. macOS may require manually approving the host app in Gatekeeper; the unsigned iOS IPA must be signed with a valid Apple development/distribution identity and provisioning profile before it can be installed on a physical iPhone.
+The LAN API uses plain HTTP, so the token and API traffic are not encrypted in transit. Use it only on a trusted private network and do not forward port 47831 to the Internet. On macOS, the token configuration is stored in `~/.homerun/remote-api.json` with owner-only file permissions. For access from outside the LAN, use a trusted HTTPS tunnel instead.
 
-## iOS companion app
-
-A native SwiftUI companion for managing HomeRun from an iPhone or iPad is available in the [ios/](ios/README.md) directory on the feat/ios-app branch. It connects to the existing host daemon and includes runner lifecycle, groups and batch creation, repository discovery, logs, workflow history, resource metrics, GitHub sign-in, and preferences.
-
-For security, the daemon's HTTP bridge is **opt-in** and loopback-only; access it through a trusted HTTPS tunnel or private-network endpoint. See [iOS setup and remote access](ios/README.md) before connecting a device.
+The Apple workflow builds the actual HomeRun Tauri GUI for Apple Silicon with the daemon bundled inside, plus the unsigned iOS IPA. The IPA must be signed with a valid Apple development/distribution identity and provisioning profile before installing on a physical iPhone.
 
 ## Architecture
 
