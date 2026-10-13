@@ -266,6 +266,13 @@ final class AppModel: ObservableObject {
         await refresh()
     }
 
+    func updateRunner(_ id: String, labels: [String], mode: String) async throws {
+        guard let api else { throw HomeRunAPIError.missingConnection }
+        let request = UpdateRunnerRequest(labels: labels, mode: mode)
+        let _: RunnerInfo = try await api.patch("runners/\\(id)", body: request, as: RunnerInfo.self)
+        await refresh()
+    }
+
     func deleteRunner(_ id: String) async throws {
         guard let api else { throw HomeRunAPIError.missingConnection }
         try await api.command("runners/\(id)", method: "DELETE")
