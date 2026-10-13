@@ -11,6 +11,14 @@ type DeviceFlowState =
   | { stage: "success" }
   | { stage: "error"; message: string };
 
+type RemoteAccessInfo = {
+  bind_address: string;
+  port: number;
+  token: string;
+  lan_url: string | null;
+};
+
+
 export function Settings() {
   const { auth, loading, loginWithToken, logout, refresh } = useAuth();
 
@@ -73,6 +81,18 @@ export function Settings() {
   const [runtimeSettingsSaving, setRuntimeSettingsSaving] = useState(false);
   const [runtimeSettingsMessage, setRuntimeSettingsMessage] = useState<string | null>(null);
   const [runtimeSettingsError, setRuntimeSettingsError] = useState(false);
+
+  const [remoteAccessInfo, setRemoteAccessInfo] = useState<RemoteAccessInfo | null>(null);
+  const [remoteAccessError, setRemoteAccessError] = useState<string | null>(null);
+  const [remoteAccessMessage, setRemoteAccessMessage] = useState<string | null>(null);
+  const [remoteTokenRevealed, setRemoteTokenRevealed] = useState(false);
+  const [remoteAccessBusy, setRemoteAccessBusy] = useState(false);
+
+  useEffect(() => {
+    invoke<RemoteAccessInfo>("remote_access_info")
+      .then(setRemoteAccessInfo)
+      .catch((error) => setRemoteAccessError(String(error)));
+  }, []);
 
   // Check launch-at-login status on mount
   useEffect(() => {
@@ -251,6 +271,30 @@ export function Settings() {
     await logout();
     setTokenSuccess(false);
     setDeviceFlow({ stage: "idle" });
+  }
+
+  async function copyRemoteValue(value: string, label: string) {
+    try {
+      await navigator.clipboard.writeText(value);
+      setRemoteAccessMessage(label + " copied to clipboard.");
+      setRemoteAccessError(null);
+    } catch (error) {
+      setRemoteAccessError("Could not copy " + label.toLowerCase() + ": " + String(error));
+    }
+  }
+
+  async function restartRemoteDaemon() {
+    setRemoteAccessBusy(true);
+    setRemoteAccessMessage(null);
+    setRemoteAccessError(null);
+    try {
+      await invoke<boolean>("restart_daemon");
+      setRemoteAccessMessage("Daemon restarted with the LAN API configured on 0.0.0.0:47831.");
+    } catch (error) {
+      setRemoteAccessError("Could not restart daemon: " + String(error));
+    } finally {
+      setRemoteAccessBusy(false);
+    }
   }
 
   return (
@@ -816,6 +860,86 @@ export function Settings() {
               </span>
             )}
           </div>
+        </div>
+      </section>
+
+      {/* LAN Remote Access */}
+      <section style={{ marginBottom: 32 }}>
+        <SectionHeader title="LAN Remote Access" />
+        <div className="card" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>Listener address</div>
+            <code className="font-mono">0.0.0.0:47831</code>
+            <p className="text-muted" style={{ margin: "6px 0 0", fontSize: 12 }}>
+              HomeRun launches its bundled daemon with this authenticated listener. Other devices on your local network can connect using the LAN URL below.
+            </p>
+          </div>
+
+          <Divider />
+
+          <div>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>LAN URL</div>
+            {remoteAccessInfo?.lan_url ? (
+              <code className="font-mono">{remoteAccessInfo.lan_url}</code>
+            ) : (
+              <p className="text-muted" style={{ margin: 0, fontSize: 12 }}>
+                Could not detect an active LAN route. Enter the Mac's LAN IP manually as http://MAC-IP:47831.
+              </p>
+            )}
+          </div>
+
+          <div>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>Bearer token</div>
+            {remoteAccessInfo ? (
+              <code className="font-mono" style={{ overflowWrap: "anywhere" }}>
+                {remoteTokenRevealed ? remoteAccessInfo.token : "•".repeat(64)}
+              </code>
+            ) : (
+              <span className="text-muted">Loading token…</span>
+            )}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+              <button
+                className="btn btn-secondary"
+                onClick={() => setRemoteTokenRevealed((value) => !value)}
+                disabled={!remoteAccessInfo}
+              >
+                {remoteTokenRevealed ? "Hide token" : "Show token"}
+              </button>
+              <button
+                className="btn btn-secondary"
+                onClick={() => remoteAccessInfo && void copyRemoteValue(remoteAccessInfo.token, "Token")}
+                disabled={!remoteAccessInfo}
+              >
+                Copy token
+              </button>
+              {remoteAccessInfo?.lan_url && (
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => void copyRemoteValue(remoteAccessInfo.lan_url!, "LAN URL")}
+                >
+                  Copy LAN URL
+                </button>
+              )}
+            </div>
+            <p className="text-muted" style={{ margin: "8px 0 0", fontSize: 12 }}>
+              The token is stored in ~/.homerun/remote-api-token with owner-only permissions on macOS.
+            </p>
+          </div>
+
+          <div style={{ padding: 10, borderRadius: 6, background: "var(--bg-tertiary)", fontSize: 12 }}>
+            The API requires this bearer token, but LAN HTTP is not encrypted. Use it only on a trusted network and do not forward port 47831 to the public Internet. Use a VPN or HTTPS tunnel for off-LAN access.
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <button className="btn btn-primary" onClick={() => void restartRemoteDaemon()} disabled={remoteAccessBusy}>
+              {remoteAccessBusy ? "Restarting daemon…" : "Restart daemon to apply LAN access"}
+            </button>
+            <span className="text-muted" style={{ fontSize: 12 }}>
+              Restarting may interrupt an active job. If the daemon was already running before this update, restart it once.
+            </span>
+          </div>
+          {remoteAccessMessage && <p role="status" className="text-muted" style={{ margin: 0 }}>{remoteAccessMessage}</p>}
+          {remoteAccessError && <p role="alert" style={{ margin: 0, color: "var(--accent-red)" }}>{remoteAccessError}</p>}
         </div>
       </section>
 
