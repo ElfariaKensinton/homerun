@@ -140,6 +140,38 @@ final class HomeRunAPI {
         try await get("health", as: HealthResponse.self)
     }
 
+    func streamScan<B: Encodable>(path: String, scanId: String, body: B) -> AsyncThrowingStream<ScanProgressEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    let payload = try encoder.encode(AnyEncodable(body))
+                    let request = try makeRequest(
+                        path: path,
+                        method: "POST",
+                        body: payload,
+                        query: [URLQueryItem(name: "scan_id", value: scanId)]
+                    )
+                    let (bytes, response) = try await session.bytes(for: request)
+                    guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                        throw HomeRunAPIError.invalidResponse
+                    }
+                    for try await line in bytes.lines {
+                        guard line.hasPrefix("data:") else { continue }
+                        let payloadLine = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                        guard let data = payloadLine.data(using: .utf8) else { continue }
+                        if let event = try? decoder.decode(ScanProgressEvent.self, from: data) {
+                            continuation.yield(event)
+                        }
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { @Sendable _ in task.cancel() }
+        }
+    }
+
     func events() -> AsyncThrowingStream<RunnerEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
