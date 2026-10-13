@@ -12,7 +12,7 @@ struct RunnersView: View {
             guard let groupId = runner.config.groupId else { return nil }
             return (groupId, runner)
         }, by: { $0.0 })
-        return grouped.map { RunnerGroupSummary(id: $0.key, runners: $0.value.map(\.1)) }
+        return grouped.map { RunnerGroupSummary(id: $0.key, runners: $0.value.map { $0.1 }) }
             .sorted { $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending }
     }
 
@@ -115,7 +115,7 @@ private struct RunnerGroupCard: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(group.runners.first?.config.name.components(separatedBy: "-").dropLast().joined(separator: "-").isEmpty == false ? "Runner group" : "Runner group")
+                    Text("Runner group · \(group.runners.first?.config.repository ?? "Unknown repository")")
                         .font(.headline)
                     Text(group.id)
                         .font(.caption2.monospaced())
