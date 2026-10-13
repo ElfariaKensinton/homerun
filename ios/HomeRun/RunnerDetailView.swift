@@ -40,12 +40,12 @@ struct RunnerDetailView: View {
                                 Label("Running: \(current)", systemImage: "bolt.fill")
                                     .font(.subheadline.weight(.medium))
                                 if let startedAt = runner.jobStartedAt {
-                                    Text("Started \\(formatTimestamp(startedAt))")
+                                    Text("Started \(formatTimestamp(startedAt))")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
                                 if let estimate = runner.estimatedJobDurationSecs {
-                                    Text("Estimated job duration: \\(formatDuration(estimate))")
+                                    Text("Estimated job duration: \(formatDuration(estimate))")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
