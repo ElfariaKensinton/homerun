@@ -16,7 +16,7 @@ enum HomeRunAPIError: LocalizedError {
         case .missingConnection:
             return "Connect to a HomeRun daemon first."
         case let .http(code, message):
-            message.isEmpty ? "The HomeRun daemon returned HTTP \(code)." : "HTTP \(code): \(message)"
+            return message.isEmpty ? "The HomeRun daemon returned HTTP \(code)." : "HTTP \(code): \(message)"
         case .invalidResponse:
             return "The daemon returned an unreadable response."
         }
