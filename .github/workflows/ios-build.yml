@@ -1,10 +1,11 @@
-name: iOS and daemon builds
+name: Apple Silicon macOS and iOS builds
 
 on:
   push:
     branches: [feat/ios-app]
     paths:
       - "ios/**"
+      - "macos/**"
       - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -13,6 +14,7 @@ on:
     branches: [master]
     paths:
       - "ios/**"
+      - "macos/**"
       - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -20,15 +22,125 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ios-build-${{ github.ref }}
+  group: apple-build-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
+  build-macos:
+    name: Build Apple Silicon macOS GUI and homerund
+    runs-on: macos-15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Verify Apple Silicon runner
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "arm64"
+          swift --version
+          rustc --version
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+
+      - name: Test authenticated daemon API
+        run: cargo test --target aarch64-apple-darwin -p homerund remote_auth_tests
+
+      - name: Build Apple Silicon homerund
+        run: cargo build --release --target aarch64-apple-darwin -p homerund
+
+      - name: Build native SwiftUI host GUI
+        run: swift build --package-path macos/HomeRunHost --configuration release
+
+      - name: Package HomeRun Host macOS app
+        run: |
+          set -euo pipefail
+          DAEMON="$GITHUB_WORKSPACE/target/aarch64-apple-darwin/release/homerund"
+          GUI="$GITHUB_WORKSPACE/macos/HomeRunHost/.build/release/HomeRunHost"
+          APP="$GITHUB_WORKSPACE/HomeRun Host.app"
+          CONTENTS="$APP/Contents"
+
+          test -x "$DAEMON"
+          test -x "$GUI"
+          file "$DAEMON" | grep -q "arm64"
+          file "$GUI" | grep -q "arm64"
+
+          rm -rf "$APP"
+          mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
+          install -m 755 "$GUI" "$CONTENTS/MacOS/HomeRunHost"
+          install -m 755 "$DAEMON" "$CONTENTS/Resources/homerund"
+
+          cat > "$CONTENTS/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key>
+            <string>HomeRunHost</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.elfariakensinton.homerun-host</string>
+            <key>CFBundleName</key>
+            <string>HomeRun Host</string>
+            <key>CFBundleDisplayName</key>
+            <string>HomeRun Host</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleShortVersionString</key>
+            <string>0.1.0</string>
+            <key>CFBundleVersion</key>
+            <string>${GITHUB_RUN_NUMBER}</string>
+            <key>LSMinimumSystemVersion</key>
+            <string>13.0</string>
+            <key>LSApplicationCategoryType</key>
+            <string>public.app-category.developer-tools</string>
+            <key>NSHighResolutionCapable</key>
+            <true/>
+            <key>NSPrincipalClass</key>
+            <string>NSApplication</string>
+          </dict>
+          </plist>
+          PLIST
+
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$CONTENTS/Info.plist"
+          /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
+          /usr/bin/codesign --verify --deep --strict "$APP"
+
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$GITHUB_WORKSPACE/HomeRun-Host-macos-arm64.zip"
+          hdiutil create -quiet -volname "HomeRun Host" -srcfolder "$APP" -ov -format UDZO "$GITHUB_WORKSPACE/HomeRun-Host-macos-arm64.dmg"
+          cp "$DAEMON" "$GITHUB_WORKSPACE/homerund-macos-arm64"
+          chmod 755 "$GITHUB_WORKSPACE/homerund-macos-arm64"
+
+      - name: Upload macOS GUI app
+        uses: actions/upload-artifact@v4
+        with:
+          name: HomeRun-Host-macos-arm64
+          path: |
+            HomeRun-Host-macos-arm64.zip
+            HomeRun-Host-macos-arm64.dmg
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload standalone daemon binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: homerund-macos-arm64
+          path: homerund-macos-arm64
+          if-no-files-found: error
+          retention-days: 30
+
   build-ios:
-    name: Build unsigned HomeRun IPA
+    name: Build unsigned HomeRun iOS IPA
     runs-on: macos-15
     steps:
       - name: Check out source
@@ -62,7 +174,6 @@ jobs:
           mkdir -p "$IPA_ROOT/Payload"
           /usr/bin/ditto "$APP_PATH" "$IPA_ROOT/Payload/HomeRun.app"
 
-          # Fail the workflow if Xcode unexpectedly codesigned the app.
           if /usr/bin/codesign -dv --verbose=2 "$IPA_ROOT/Payload/HomeRun.app" >"$RUNNER_TEMP/codesign-check.txt" 2>&1; then
             cat "$RUNNER_TEMP/codesign-check.txt"
             echo "Expected an unsigned app, but a code signature was found."
@@ -74,69 +185,10 @@ jobs:
           /usr/bin/unzip -t "$GITHUB_WORKSPACE/HomeRun-unsigned.ipa"
           /usr/bin/unzip -Z1 "$GITHUB_WORKSPACE/HomeRun-unsigned.ipa" | grep -Fx "Payload/HomeRun.app/Info.plist"
 
-      - name: Upload unsigned IPA artifact
+      - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
         with:
           name: HomeRun-unsigned-IPA
           path: HomeRun-unsigned.ipa
-          if-no-files-found: error
-          retention-days: 30
-
-  test-daemon:
-    name: Test daemon remote API
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v6
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            . -> target
-
-      - name: Test authenticated remote API
-        run: cargo test -p homerund remote_auth_tests
-
-  build-daemon:
-    name: Build homerund (${{ matrix.platform }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            platform: linux-x86_64
-            binary: target/release/homerund
-          - os: macos-15
-            platform: macos
-            binary: target/release/homerund
-          - os: windows-latest
-            platform: windows-x86_64
-            binary: target/release/homerund.exe
-    runs-on: ${{ matrix.os }}
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v6
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            . -> target
-
-      - name: Build homerund release binary
-        run: cargo build --release -p homerund
-
-      - name: Upload homerund binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: homerund-${{ matrix.platform }}
-          path: ${{ matrix.binary }}
           if-no-files-found: error
           retention-days: 30
