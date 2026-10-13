@@ -10,15 +10,15 @@ enum HomeRunAPIError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidEndpoint:
-            "Enter a valid HTTPS endpoint, including https://."
+            return "Enter a valid HTTPS endpoint, including https://."
         case .insecureEndpoint:
-            "Use HTTPS for remote connections. HTTP is allowed only for localhost development."
+            return "Use HTTPS for remote connections. HTTP is allowed only for localhost development."
         case .missingConnection:
-            "Connect to a HomeRun daemon first."
+            return "Connect to a HomeRun daemon first."
         case let .http(code, message):
             message.isEmpty ? "The HomeRun daemon returned HTTP \(code)." : "HTTP \(code): \(message)"
         case .invalidResponse:
-            "The daemon returned an unreadable response."
+            return "The daemon returned an unreadable response."
         }
     }
 }
