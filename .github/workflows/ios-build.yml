@@ -1,20 +1,22 @@
-name: iOS build
+name: iOS and daemon builds
 
 on:
   push:
     branches: [feat/ios-app]
     paths:
       - "ios/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - ".github/workflows/ios-build.yml"
-      - "crates/daemon/src/api/scanner.rs"
-      - "crates/daemon/src/server.rs"
   pull_request:
     branches: [master]
     paths:
       - "ios/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - ".github/workflows/ios-build.yml"
-      - "crates/daemon/src/api/scanner.rs"
-      - "crates/daemon/src/server.rs"
   workflow_dispatch:
 
 concurrency:
@@ -80,7 +82,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  build-daemon:
+  test-daemon:
     name: Test daemon remote API
     runs-on: ubuntu-latest
     steps:
@@ -98,3 +100,43 @@ jobs:
 
       - name: Test authenticated remote API
         run: cargo test -p homerund remote_auth_tests
+
+  build-daemon:
+    name: Build homerund (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x86_64
+            binary: target/release/homerund
+          - os: macos-15
+            platform: macos
+            binary: target/release/homerund
+          - os: windows-latest
+            platform: windows-x86_64
+            binary: target/release/homerund.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+
+      - name: Build homerund release binary
+        run: cargo build --release -p homerund
+
+      - name: Upload homerund binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: homerund-${{ matrix.platform }}
+          path: ${{ matrix.binary }}
+          if-no-files-found: error
+          retention-days: 30
