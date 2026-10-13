@@ -1412,9 +1412,20 @@ impl RunnerManager {
             .map(|info| Self::with_job_estimate(info, &history, &runners_guard))
     }
 
-    /// Get the current step progress for a running job on the given runner.
+    /// Get step progress for the current job, falling back to the most recent
+    /// completed job when the live Worker watcher has already been removed.
     pub async fn get_steps(&self, runner_id: &str) -> Option<StepsResponse> {
-        self.step_watcher.get_steps(runner_id).await
+        if let Some(steps) = self.step_watcher.get_steps(runner_id).await {
+            return Some(steps);
+        }
+
+        let history = self.job_history.read().await;
+        let entry = history.get(runner_id)?.last()?;
+        Some(StepsResponse {
+            job_name: entry.job_name.clone(),
+            steps: entry.steps.clone(),
+            steps_discovered: entry.steps.len(),
+        })
     }
 
     /// Get the log lines for a specific step of a running job.
@@ -1431,13 +1442,24 @@ impl RunnerManager {
             .find(|s| s.number == step_number)?;
         let step_name = step.name.clone();
 
-        // 2. Get job_id from job_context
-        let runners = self.runners.read().await;
-        let runner = runners.get(runner_id)?;
-        let job_id = runner.job_context.as_ref()?.job_id?;
-        let owner = runner.config.repo_owner.clone();
-        let repo = runner.config.repo_name.clone();
-        drop(runners);
+        // 2. Get job_id from the live job context, or from the most recent
+        // history URL (completed jobs store URLs ending in /job/{job_id}).
+        let (owner, repo, live_job_id) = {
+            let runners = self.runners.read().await;
+            let runner = runners.get(runner_id)?;
+            (
+                runner.config.repo_owner.clone(),
+                runner.config.repo_name.clone(),
+                runner.job_context.as_ref().and_then(|context| context.job_id),
+            )
+        };
+        let job_id = live_job_id.or_else(|| {
+            let history = self.job_history.try_read().ok()?;
+            let run_url = history.get(runner_id)?.last()?.run_url.as_deref()?;
+            let (base, id) = run_url.rsplit_once("/job/")?;
+            if base.is_empty() { return None; }
+            id.split('/').next()?.parse::<u64>().ok()
+        })?;
 
         // 3. Get auth token (same pattern as start_job_context_poller)
         let token = {
