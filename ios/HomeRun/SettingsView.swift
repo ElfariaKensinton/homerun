@@ -131,6 +131,17 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
                 HStack {
+                    Text("Docker runner support")
+                    Spacer()
+                    Text(model.dockerStatus?.available == true ? "Available" : (model.dockerStatus == nil ? "Unknown" : "Unavailable"))
+                        .foregroundStyle(model.dockerStatus?.available == true ? .green : .secondary)
+                }
+                if let dockerError = model.dockerStatus?.error, !dockerError.isEmpty {
+                    Text(dockerError)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                HStack {
                     Text("Background service")
                     Spacer()
                     Text(serviceText)
