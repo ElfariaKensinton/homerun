@@ -6,6 +6,25 @@ struct ActivityView: View {
     @State private var level = "All"
     @State private var errorMessage: String?
 
+    private var filteredLogs: [DaemonLogEntry] {
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        let threshold = levelRank(level == "All" ? "trace" : level)
+        return model.daemonLogs.filter { entry in
+            levelRank(entry.level) >= threshold &&
+            (query.isEmpty || entry.message.localizedCaseInsensitiveContains(query) || entry.target.localizedCaseInsensitiveContains(query))
+        }
+    }
+
+    private func levelRank(_ value: String) -> Int {
+        switch value.lowercased() {
+        case "error": return 4
+        case "warn", "warning": return 3
+        case "info": return 2
+        case "debug": return 1
+        default: return 0
+        }
+    }
+
     var body: some View {
         List {
             Section {
@@ -38,7 +57,7 @@ struct ActivityView: View {
                     EmptyStateView(title: "No log entries", message: "No entries match these filters.", symbol: "text.alignleft")
                         .listRowSeparator(.hidden)
                 } else {
-                    ForEach(model.daemonLogs) { entry in
+                    ForEach(filteredLogs) { entry in
                         VStack(alignment: .leading, spacing: 5) {
                             HStack {
                                 Text(entry.level.uppercased())
@@ -73,9 +92,17 @@ struct ActivityView: View {
                     .accessibilityLabel("Refresh activity")
             }
         }
-        .task {
-            do { try await model.loadDaemonLogs(level: level) }
-            catch { errorMessage = error.localizedDescription }
+        .task(id: level) {
+            do {
+                try await model.loadDaemonLogs(level: level)
+                guard let stream = model.daemonLogsStream(level: level) else { return }
+                for try await entry in stream {
+                    guard !Task.isCancelled else { return }
+                    model.appendDaemonLog(entry)
+                }
+            } catch {
+                if !Task.isCancelled { errorMessage = error.localizedDescription }
+            }
         }
         .refreshable {
             do { try await model.loadDaemonLogs(level: level, search: search.isEmpty ? nil : search) }
