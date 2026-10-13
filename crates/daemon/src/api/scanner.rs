@@ -123,12 +123,21 @@ pub async fn scan_local_stream(
         .await
         .unwrap_or_default();
 
-        // Persist local results
+        // Preserve the previous remote scan when refreshing local workspaces.
+        let existing = persistence::load_scan_results(&config.scan_results_path())
+            .await
+            .ok()
+            .flatten();
+        let remote_results = existing
+            .as_ref()
+            .map(|scan| scan.remote_results.clone())
+            .unwrap_or_default();
+        let merged_results = merge_results(results.clone(), remote_results.clone());
         let scan_results = ScanResults {
             last_scan_at: chrono::Utc::now(),
-            local_results: results.clone(),
-            remote_results: vec![],
-            merged_results: results,
+            local_results: results,
+            remote_results,
+            merged_results,
         };
         let _ = persistence::save_scan_results(&config.scan_results_path(), &scan_results).await;
         scan_state.remove(&scan_id).await;
