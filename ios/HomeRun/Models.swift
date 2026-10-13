@@ -382,3 +382,32 @@ struct DevicePollRequest: Encodable {
 }
 
 struct EmptyPayload: Encodable {}
+
+
+struct ScanProgressEvent: Decodable {
+    var type: String
+    var scanType: String?
+    var repo: String?
+    var index: Int?
+    var total: Int?
+    var totalFound: Int?
+    var totalChecked: Int?
+    var checked: Int?
+    var fullName: String?
+    var source: String?
+    var workflowFiles: [String]?
+    var matchedLabels: [String]?
+    var localPath: String?
+}
+
+struct ScanStreamLocalRequest: Encodable {
+    var path: String
+}
+
+struct CancelScanRequest: Encodable {
+    var scanId: String
+}
+
+struct ScanCancelResponse: Decodable {
+    var cancelled: Bool
+}
