@@ -1,5 +1,7 @@
 # HomeRun for iOS
 
+**Minimum OS:** iOS 26 or later.
+
 HomeRun for iOS controls runners managed by the existing HomeRun desktop app.
 
 ## Connect

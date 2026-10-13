@@ -163,6 +163,13 @@ struct RepoInfo: Codable, Identifiable {
     var isPrivate: Bool
     var htmlUrl: String
     var isOrg: Bool
+
+    // The daemon sends the privacy flag under the key "private".
+    private enum CodingKeys: String, CodingKey {
+        case id, fullName, name, owner
+        case isPrivate = "private"
+        case htmlUrl, isOrg
+    }
 }
 
 struct DiscoveredRepo: Codable, Identifiable {

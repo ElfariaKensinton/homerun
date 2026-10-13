@@ -187,7 +187,7 @@ struct RunnerDetailView: View {
                 LabeledContent("Completed", value: formatTimestamp(last.completedAt))
                 if let branch = last.branch { LabeledContent("Branch", value: branch) }
                 if let url = last.runUrl, let target = URL(string: url) {
-                    Link("Open workflow run", destination: target)
+                    Link("Open workflow & artifacts", destination: target)
                 }
             }
         }
@@ -293,7 +293,7 @@ struct RunnerDetailView: View {
                     if let runUrl = entry.runUrl, let target = URL(string: runUrl) {
                         ViewThatFits(in: .horizontal) {
                             HStack {
-                                Link("Open workflow", destination: target)
+                                Link("Open workflow & artifacts", destination: target)
                                 Button("Check status") {
                                     Task {
                                         do {

@@ -223,7 +223,7 @@ struct SettingsView: View {
                 HStack {
                     Text("HomeRun for iOS")
                     Spacer()
-                    Text("Native · iOS 17+")
+                    Text("Native · iOS 26+")
                         .foregroundStyle(.secondary)
                 }
                 Link("Repository and documentation", destination: URL(string: "https://github.com/ElfariaKensinton/homerun/tree/feat/ios-app/ios")!)

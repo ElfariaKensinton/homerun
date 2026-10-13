@@ -110,9 +110,14 @@ struct RepositoriesView: View {
             }
 
             Section("GitHub repositories · \(filteredRepos.count)") {
+                if let repositoryLoadError = model.repositoryLoadError {
+                    Label("Repository loading failed: \(repositoryLoadError)", systemImage: "exclamationmark.triangle")
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
                 TextField("Filter repositories", text: $search)
                 if filteredRepos.isEmpty {
-                    Text(model.authenticated ? "No repositories match the filter." : "GitHub is not connected.")
+                    Text(!model.authenticated ? "GitHub is not connected." : (model.repositoryLoadError == nil ? "No repositories match the filter." : "Repository list unavailable; see the error above."))
                         .foregroundStyle(.secondary)
                 }
                 ForEach(filteredRepos) { repo in

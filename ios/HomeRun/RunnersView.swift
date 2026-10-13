@@ -182,14 +182,41 @@ struct CreateRunnerSheet: View {
     @State private var errorMessage: String?
     @State private var resultMessage: String?
 
+    private var suggestedRunnerName: String {
+        let repoName = repository.split(separator: "/").last.map(String.init) ?? "repo"
+        return "\(repoName)-runner-1"
+    }
+
     var body: some View {
         NavigationStack {
             Form {
                 Section("Repository") {
                     if model.repositories.isEmpty {
-                        Text("Sign in to GitHub in Settings to load repositories.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
+                        if let repositoryLoadError = model.repositoryLoadError {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Label("Could not load GitHub repositories", systemImage: "exclamationmark.triangle")
+                                    .foregroundStyle(.red)
+                                Text(repositoryLoadError)
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                                Button("Retry") {
+                                    Task {
+                                        await model.refresh()
+                                        if repository.isEmpty { repository = model.repositories.first?.fullName ?? "" }
+                                    }
+                                }
+                            }
+                        } else if !model.authenticated {
+                            Text("Sign in to GitHub in Settings to load repositories.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        } else if model.isRefreshing {
+                            ProgressView("Loading GitHub repositories…")
+                        } else {
+                            Text("GitHub is connected, but no repositories were returned. Tap reload to try again.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
                     } else {
                         Picker("Repository", selection: $repository) {
                             ForEach(model.repositories) { repo in
@@ -197,7 +224,16 @@ struct CreateRunnerSheet: View {
                             }
                         }
                     }
-                    TextField("Runner name (optional)", text: $runnerName)
+                    if count == 1 {
+                        TextField("Custom runner name (optional)", text: $runnerName)
+                        Text("Leave blank to generate a unique name, such as \(suggestedRunnerName).")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Names are generated automatically for all \(count) runners (for example, \(suggestedRunnerName)).")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                     TextField("Labels, comma-separated", text: $labels)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -262,7 +298,12 @@ struct CreateRunnerSheet: View {
                     Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button { Task { await model.refresh() } } label: { Image(systemName: "arrow.clockwise") }
+                    Button {
+                        Task {
+                            await model.refresh()
+                            if repository.isEmpty { repository = model.repositories.first?.fullName ?? "" }
+                        }
+                    } label: { Image(systemName: "arrow.clockwise") }
                         .accessibilityLabel("Reload repositories")
                 }
             }

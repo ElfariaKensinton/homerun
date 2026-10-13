@@ -10,6 +10,7 @@ final class AppModel: ObservableObject {
     @Published var daemonVersion = ""
     @Published var runners: [RunnerInfo] = []
     @Published var repositories: [RepoInfo] = []
+    @Published var repositoryLoadError: String?
     @Published var metrics: MetricsResponse?
     @Published var authStatus: AuthStatus?
     @Published var preferences: Preferences?
@@ -128,15 +129,23 @@ final class AppModel: ObservableObject {
         if let value = try? await api.get("runners", as: [RunnerInfo].self) {
             runners = value
         }
-        if let value = try? await api.get("auth/status", as: AuthStatus.self) {
+        do {
+            let value = try await api.get("auth/status", as: AuthStatus.self)
             authStatus = value
             if value.authenticated {
-                if let repos = try? await api.get("repos", as: [RepoInfo].self) {
-                    repositories = repos
+                do {
+                    repositories = try await api.get("repos", as: [RepoInfo].self)
+                    repositoryLoadError = nil
+                } catch {
+                    // Keep any cached repositories, but expose the actual fetch failure.
+                    repositoryLoadError = error.localizedDescription
                 }
             } else {
                 repositories = []
+                repositoryLoadError = nil
             }
+        } catch {
+            repositoryLoadError = "Could not check GitHub authorization: " + error.localizedDescription
         }
         if let value = try? await api.get("metrics", as: MetricsResponse.self) {
             metrics = value
@@ -362,6 +371,7 @@ final class AppModel: ObservableObject {
         try await api.command("auth", method: "DELETE")
         authStatus = AuthStatus(authenticated: false, user: nil)
         repositories = []
+        repositoryLoadError = nil
     }
 
     func startDeviceFlow() async throws -> DeviceFlowResponse {
