@@ -1453,13 +1453,14 @@ impl RunnerManager {
                 runner.job_context.as_ref().and_then(|context| context.job_id),
             )
         };
-        let job_id = live_job_id.or_else(|| {
-            let history = self.job_history.try_read().ok()?;
+        let job_id = if let Some(job_id) = live_job_id {
+            job_id
+        } else {
+            let history = self.job_history.read().await;
             let run_url = history.get(runner_id)?.last()?.run_url.as_deref()?;
-            let (base, id) = run_url.rsplit_once("/job/")?;
-            if base.is_empty() { return None; }
-            id.split('/').next()?.parse::<u64>().ok()
-        })?;
+            let (_, id) = run_url.rsplit_once("/job/")?;
+            id.split('/').next()?.parse::<u64>().ok()?
+        };
 
         // 3. Get auth token (same pattern as start_job_context_poller)
         let token = {
