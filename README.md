@@ -62,6 +62,14 @@ HomeRun runs on **macOS** and **Windows**, with Linux support planned.
 - **Cross-platform** — macOS (launchd auto-start, native notifications) and Windows (Task Scheduler auto-start, named pipe IPC)
 - **Pre-commit hooks** — enforces `cargo fmt`, `cargo clippy`, conventional commits, and Prettier on every commit
 
+## Native Apple Silicon macOS host app
+
+The [\u0060macos/HomeRunHost\u0060](macos/HomeRunHost/) directory contains a native SwiftUI GUI for starting and stopping the bundled \u0060homerund\u0060 daemon and viewing its logs. The daemon's authenticated HTTP bridge remains bound to \u0060127.0.0.1\u0060. The GUI stores its API token in macOS Keychain and can configure Tailscale Serve for private HTTPS access from an iPhone on the same tailnet.
+
+To download the Apple Silicon build, open the [iOS and macOS Actions workflow](https://github.com/ElfariaKensinton/homerun/actions/workflows/ios-build.yml) and download the \u0060HomeRun-Host-macos-arm64\u0060 artifact (DMG and ZIP). The standalone daemon is available as \u0060homerund-macos-arm64\u0060; the iOS app is published separately as \u0060HomeRun-unsigned-IPA\u0060.
+
+These CI artifacts are not Developer ID signed or notarized. macOS may require manually approving the host app in Gatekeeper; the unsigned iOS IPA must be signed with a valid Apple development/distribution identity and provisioning profile before it can be installed on a physical iPhone.
+
 ## iOS companion app
 
 A native SwiftUI companion for managing HomeRun from an iPhone or iPad is available in the [ios/](ios/README.md) directory on the feat/ios-app branch. It connects to the existing host daemon and includes runner lifecycle, groups and batch creation, repository discovery, logs, workflow history, resource metrics, GitHub sign-in, and preferences.
