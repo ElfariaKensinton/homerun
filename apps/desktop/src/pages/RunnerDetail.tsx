@@ -816,7 +816,7 @@ export function RunnerDetail() {
         </div>
 
         {/* Job Progress — full width, only when busy */}
-        {state === "busy" && steps.length > 0 && (
+        {steps.length > 0 && (
           <JobProgress
             steps={steps}
             stepsDiscovered={stepsDiscovered}
