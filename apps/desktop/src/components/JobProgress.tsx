@@ -134,7 +134,13 @@ export function JobProgress({
             </span>
           )}
           <span className="runner-card-label" style={{ margin: 0, fontSize: 11 }}>
-            {jobName ? (isBusy ? `Job: ${jobName}` : `Last job: ${jobName}`) : isBusy ? "Job Progress" : "Latest Job Steps"}
+            {jobName
+              ? isBusy
+                ? `Job: ${jobName}`
+                : `Last job: ${jobName}`
+              : isBusy
+                ? "Job Progress"
+                : "Latest Job Steps"}
           </span>
           <span
             style={{
@@ -280,9 +286,11 @@ export function JobProgress({
                     {stepLogErrors[step.number] ? (
                       <span
                         style={{
-                          color: stepLogErrors[step.number]?.startsWith("GitHub has not published")
-                            ? "var(--text-secondary)"
-                            : "var(--accent-red)",
+                          color:
+                            stepLogErrors[step.number]?.startsWith("GitHub has not published") ||
+                            stepLogErrors[step.number]?.startsWith("Waiting for live step output")
+                              ? "var(--text-secondary)"
+                              : "var(--accent-red)",
                           whiteSpace: "pre-wrap",
                           wordBreak: "break-word",
                         }}
