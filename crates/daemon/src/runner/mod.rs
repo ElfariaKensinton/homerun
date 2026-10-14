@@ -1483,35 +1483,11 @@ impl RunnerManager {
             });
         }
 
-        // Compatibility fallback for patched runner builds that mirrored marked
-        // output into Worker diagnostics before the dedicated sidecar was added.
-        let live_lines = self
-            .step_watcher
-            .get_step_logs(runner_id, step_number)
-            .await
-            .unwrap_or_default();
-        if !live_lines.is_empty() {
-            return Ok(crate::api::steps::StepLogsResponse {
-                step_number,
-                step_name,
-                lines: live_lines,
-            });
-        }
-
-        // Worker logs remain on disk after completion, so completed step output
-        // survives stopping the watcher and restarting the daemon.
-        let disk_lines =
-            crate::runner::steps::WorkerLogWatcher::read_step_logs_from_disk(&work_dir, step_number);
-        if !disk_lines.is_empty() {
-            return Ok(crate::api::steps::StepLogsResponse {
-                step_number,
-                step_name,
-                lines: disk_lines,
-            });
-        }
-
-        // Do not turn a missing log blob into a 502 while the job is executing.
-        // The clients will poll this endpoint for updated local output.
+        // Never substitute raw Worker diagnostics for step output: diagnostic lines
+        // are not reliably attributed to a workflow step and can show another step's
+        // contents under the wrong heading. If the dedicated output file is empty,
+        // wait for the next poll while the job runs; after completion use GitHub's
+        // authoritative per-step log endpoint below.
         if runner_busy {
             return Ok(crate::api::steps::StepLogsResponse {
                 step_number,
