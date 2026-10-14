@@ -290,9 +290,42 @@ impl WorkerLogWatcher {
         Some(state.step_logs.get(&step_number).cloned().unwrap_or_default())
     }
 
-    /// Reconstruct step logs from the last on-disk Worker log. The runner keeps
-    /// these files after the job finishes, so step output remains available
-    /// after the live watcher has been stopped or the daemon has restarted.
+    /// Read the dedicated user-facing output file written by the patched runner.
+    /// Unlike Worker diagnostics, this file contains only masked step output.
+    pub fn read_step_output_from_disk(work_dir: &Path, step_number: u16) -> Vec<String> {
+        let path = work_dir
+            .join("_diag")
+            .join("homerun-step-logs")
+            .join(format!("step-{step_number}.log"));
+        let Ok(content) = std::fs::read_to_string(path) else {
+            return Vec::new();
+        };
+
+        let mut logs = Vec::new();
+        let mut bytes = 0usize;
+        for line in content.lines() {
+            if line.is_empty() {
+                continue;
+            }
+            let mut message = line.to_string();
+            if message.len() > MAX_STEP_LOG_BYTES {
+                message = message.chars().take(MAX_STEP_LOG_BYTES).collect();
+            }
+            bytes = bytes.saturating_add(message.len());
+            logs.push(message);
+            while logs.len() > MAX_STEP_LOG_LINES || bytes > MAX_STEP_LOG_BYTES {
+                if logs.is_empty() {
+                    bytes = 0;
+                    break;
+                }
+                bytes = bytes.saturating_sub(logs.remove(0).len());
+            }
+        }
+        logs
+    }
+
+    /// Reconstruct step logs from Worker diagnostics as a compatibility fallback
+    /// for runner versions that already emit marked output lines.
     pub fn read_step_logs_from_disk(work_dir: &Path, step_number: u16) -> Vec<String> {
         // Worker diagnostics roll over into multiple Worker log pages when they grow
         // large. Replay every page in order and reset only at the start of a new job.
