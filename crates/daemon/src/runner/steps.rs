@@ -208,6 +208,8 @@ impl WorkerLogWatcher {
                         state.log_path = Some(newer);
                         state.file_offset = 0;
                         state.steps.clear();
+                        state.step_logs.clear();
+                        state.step_log_bytes.clear();
                         // Fall through to read the new file immediately
                     } else {
                         return true;
@@ -223,9 +225,17 @@ impl WorkerLogWatcher {
             return true;
         };
 
-        // Read only the new portion of the file.
-        let new_bytes = &content.as_bytes()[state.file_offset as usize..];
-        let new_text = String::from_utf8_lossy(new_bytes);
+        // Consume only complete lines. If the runner is in the middle of
+        // writing a line, leave the offset at the last newline and retry it next poll.
+        let all_bytes = content.as_bytes();
+        let start = (state.file_offset as usize).min(all_bytes.len());
+        let new_bytes = &all_bytes[start..];
+        let complete_len = new_bytes
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map(|index| index + 1)
+            .unwrap_or(0);
+        let new_text = String::from_utf8_lossy(&new_bytes[..complete_len]);
 
         for line in new_text.lines() {
             if let Some(event) = parse_step_event(line) {
@@ -252,7 +262,7 @@ impl WorkerLogWatcher {
             }
         }
 
-        state.file_offset = content.len() as u64;
+        state.file_offset = (start + complete_len) as u64;
         true
     }
 
@@ -285,7 +295,7 @@ impl WorkerLogWatcher {
             return Vec::new();
         };
 
-        let mut steps = Vec::new();
+        let mut steps: Vec<StepInfo> = Vec::new();
         let mut logs: HashMap<u16, Vec<String>> = HashMap::new();
         let mut log_bytes: HashMap<u16, usize> = HashMap::new();
 
@@ -298,7 +308,7 @@ impl WorkerLogWatcher {
             if let Some(number) = steps
                 .iter()
                 .rev()
-                .find(|step: &&StepInfo| step.status == StepStatus::Running)
+                .find(|step| step.status == StepStatus::Running)
                 .map(|step| step.number)
             {
                 append_step_log(&mut logs, &mut log_bytes, number, line);
@@ -526,6 +536,10 @@ mod tests {
         assert_eq!(resp.steps[0].name, "Checkout");
         assert_eq!(resp.steps[0].status, StepStatus::Succeeded);
         assert!(resp.steps[0].completed_at.is_some());
+        assert_eq!(
+            watcher.get_step_logs("runner-1", 1).await.unwrap(),
+            vec!["checkout output line".to_string()]
+        );
         assert_eq!(resp.steps[1].name, "Build");
         assert_eq!(resp.steps[1].status, StepStatus::Running);
         assert!(resp.steps[1].started_at.is_some());
