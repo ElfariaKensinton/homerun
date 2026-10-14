@@ -860,4 +860,31 @@ mod tests {
         );
         assert!(WorkerLogWatcher::read_step_logs_from_disk(dir.path(), 2).is_empty());
     }
+    #[tokio::test]
+    async fn test_watcher_filters_internal_worker_diagnostics_from_live_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let diag = dir.path().join("_diag");
+        std::fs::create_dir_all(&diag).unwrap();
+        let log_path = diag.join("Worker_20261014-000000-utc.log");
+        let log_content = [
+            "[2026-10-14 00:00:00Z INFO StepsRunner] Processing step: DisplayName='Build'",
+            "[2026-10-14 00:00:00Z INFO StepsRunner] Starting the step.",
+            "[2026-10-14 00:00:01Z INFO Worker] internal worker diagnostic",
+            "[2026-10-14 00:00:01Z INFO ExecutionContext] ordinary execution trace",
+            "[2026-10-14 00:00:02Z INFO ExecutionContext] HOMERUN_STEP_OUTPUT:: make all",
+            "[2026-10-14 00:00:03Z INFO StepsRunner] No need for updating job result with current step result 'Succeeded'.",
+        ].join("\\n") + "\\n";
+        std::fs::write(&log_path, log_content).unwrap();
+
+        let watcher = WorkerLogWatcher::new();
+        watcher
+            .start_watching("runner-filter", "filter-job", dir.path())
+            .await;
+        assert!(watcher.poll("runner-filter").await);
+        assert_eq!(
+            watcher.get_step_logs("runner-filter", 1).await.unwrap(),
+            vec!["make all".to_string()]
+        );
+    }
+
 }
