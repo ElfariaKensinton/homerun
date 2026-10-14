@@ -860,6 +860,7 @@ mod tests {
         );
         assert!(WorkerLogWatcher::read_step_logs_from_disk(dir.path(), 2).is_empty());
     }
+
     #[tokio::test]
     async fn test_watcher_filters_internal_worker_diagnostics_from_live_output() {
         let dir = tempfile::tempdir().unwrap();
@@ -873,7 +874,7 @@ mod tests {
             "[2026-10-14 00:00:01Z INFO ExecutionContext] ordinary execution trace",
             "[2026-10-14 00:00:02Z INFO ExecutionContext] HOMERUN_STEP_OUTPUT:: make all",
             "[2026-10-14 00:00:03Z INFO StepsRunner] No need for updating job result with current step result 'Succeeded'.",
-        ].join("\\n") + "\\n";
+        ].join("\n") + "\n";
         std::fs::write(&log_path, log_content).unwrap();
 
         let watcher = WorkerLogWatcher::new();
