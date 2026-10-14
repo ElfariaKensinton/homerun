@@ -247,22 +247,24 @@ impl WorkerLogWatcher {
                 continue;
             }
 
-            // The Worker diagnostic file contains the actual per-step execution
-            // trace. Keep lines under the currently running step so clients can
-            // display them immediately instead of waiting for GitHub's log blob.
-            if let Some(step_number) = state
-                .steps
-                .iter()
-                .rev()
-                .find(|step| step.status == StepStatus::Running)
-                .map(|step| step.number)
-            {
-                append_step_log(
-                    &mut state.step_logs,
-                    &mut state.step_log_bytes,
-                    step_number,
-                    line,
-                );
+            // Only accept lines explicitly mirrored by our patched runner.
+            // Worker diagnostics otherwise contain internal traces unrelated to
+            // command output and must not appear in a user's live step log.
+            if let Some(output) = mirrored_step_output(line) {
+                if let Some(step_number) = state
+                    .steps
+                    .iter()
+                    .rev()
+                    .find(|step| step.status == StepStatus::Running)
+                    .map(|step| step.number)
+                {
+                    append_step_log(
+                        &mut state.step_logs,
+                        &mut state.step_log_bytes,
+                        step_number,
+                        output,
+                    );
+                }
             }
         }
 
@@ -321,19 +323,31 @@ impl WorkerLogWatcher {
                     continue;
                 }
 
-                if let Some(number) = steps
-                    .iter()
-                    .rev()
-                    .find(|step| step.status == StepStatus::Running)
-                    .map(|step| step.number)
-                {
-                    append_step_log(&mut logs, &mut log_bytes, number, line);
+                if let Some(output) = mirrored_step_output(line) {
+                    if let Some(number) = steps
+                        .iter()
+                        .rev()
+                        .find(|step| step.status == StepStatus::Running)
+                        .map(|step| step.number)
+                    {
+                        append_step_log(&mut logs, &mut log_bytes, number, output);
+                    }
                 }
             }
         }
 
         logs.remove(&step_number).unwrap_or_default()
     }
+}
+
+const MIRRORED_STEP_OUTPUT_MARKER: &str = "HOMERUN_STEP_OUTPUT::";
+
+/// Extract only command output deliberately mirrored by the patched runner.
+/// Other Worker diagnostic lines are operational noise, not user-facing step logs.
+fn mirrored_step_output(line: &str) -> Option<&str> {
+    let marker_index = line.find(MIRRORED_STEP_OUTPUT_MARKER)?;
+    let output_start = marker_index + MIRRORED_STEP_OUTPUT_MARKER.len();
+    Some(line[output_start..].strip_prefix(' ').unwrap_or(&line[output_start..]))
 }
 
 const MAX_STEP_LOG_LINES: usize = 4_000;
@@ -544,7 +558,7 @@ mod tests {
         let log_content = "\
 [2026-03-23 07:54:53Z INFO StepsRunner] Processing step: DisplayName='Checkout'\n\
 [2026-03-23 07:54:53Z INFO StepsRunner] Starting the step.\n\
-[2026-03-23 07:54:54Z INFO ExecutionContext] checkout output line\n\
+[2026-03-23 07:54:54Z INFO ExecutionContext] HOMERUN_STEP_OUTPUT:: checkout output line\n\
 [2026-03-23 07:54:55Z INFO StepsRunner] No need for updating job result with current step result 'Succeeded'.\n\
 [2026-03-23 07:54:55Z INFO StepsRunner] Processing step: DisplayName='Build'\n\
 [2026-03-23 07:54:55Z INFO StepsRunner] Starting the step.\n";
@@ -581,7 +595,7 @@ mod tests {
         let content = "\
 [2026-03-23 07:54:53Z INFO StepsRunner] Processing step: DisplayName='Checkout'\n\
 [2026-03-23 07:54:53Z INFO StepsRunner] Starting the step.\n\
-[2026-03-23 07:54:54Z INFO ExecutionContext] checkout output line\n\
+[2026-03-23 07:54:54Z INFO ExecutionContext] HOMERUN_STEP_OUTPUT:: checkout output line\n\
 [2026-03-23 07:54:55Z INFO StepsRunner] No need for updating job result with current step result 'Succeeded'.\n";
         std::fs::write(&log_path, content).unwrap();
 
@@ -721,7 +735,7 @@ mod tests {
             "[2026-03-23 07:00:00Z INFO JobRunner] Starting the job execution context.",
             "[2026-03-23 07:00:00Z INFO StepsRunner] Processing step: DisplayName='OldStep'",
             "[2026-03-23 07:00:00Z INFO StepsRunner] Starting the step.",
-            "[2026-03-23 07:00:01Z INFO ExecutionContext] old job output",
+            "[2026-03-23 07:00:01Z INFO ExecutionContext] HOMERUN_STEP_OUTPUT:: old job output",
             "[2026-03-23 07:00:01Z INFO StepsRunner] No need for updating job result with current step result 'Succeeded'.",
         ].join("\n") + "\n";
         std::fs::write(&old_log, old_content).unwrap();
@@ -767,7 +781,7 @@ mod tests {
             "[2026-03-23 07:54:53Z INFO JobRunner] Starting the job execution context.",
             "[2026-03-23 07:54:53Z INFO StepsRunner] Processing step: DisplayName='Build'",
             "[2026-03-23 07:54:53Z INFO StepsRunner] Starting the step.",
-            "[2026-03-23 07:54:54Z INFO ExecutionContext] output before page rotation",
+            "[2026-03-23 07:54:54Z INFO ExecutionContext] HOMERUN_STEP_OUTPUT:: output before page rotation",
         ].join("\n") + "\n";
         std::fs::write(&first_page, first_content).unwrap();
 
@@ -784,7 +798,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(50));
         let second_page = diag.join("Worker_20260323-075454-utc.log");
         let second_content = [
-            "[2026-03-23 07:54:55Z INFO ExecutionContext] output after page rotation",
+            "[2026-03-23 07:54:55Z INFO ExecutionContext] HOMERUN_STEP_OUTPUT:: output after page rotation",
             "[2026-03-23 07:54:56Z INFO StepsRunner] No need for updating job result with current step result 'Succeeded'.",
         ].join("\n") + "\n";
         std::fs::write(&second_page, second_content).unwrap();
@@ -814,7 +828,7 @@ mod tests {
                 "[2026-03-23 07:00:00Z INFO JobRunner] Starting the job execution context.",
                 "[2026-03-23 07:00:00Z INFO StepsRunner] Processing step: DisplayName='OldStep'",
                 "[2026-03-23 07:00:00Z INFO StepsRunner] Starting the step.",
-                "[2026-03-23 07:00:01Z INFO ExecutionContext] old job output",
+                "[2026-03-23 07:00:01Z INFO ExecutionContext] HOMERUN_STEP_OUTPUT:: old job output",
                 "[2026-03-23 07:00:02Z INFO StepsRunner] No need for updating job result with current step result 'Succeeded'.",
             ].join("\n") + "\n"
         ).unwrap();
@@ -825,14 +839,14 @@ mod tests {
                 "[2026-03-23 07:54:53Z INFO JobRunner] Starting the job execution context.",
                 "[2026-03-23 07:54:53Z INFO StepsRunner] Processing step: DisplayName='Checkout'",
                 "[2026-03-23 07:54:53Z INFO StepsRunner] Starting the step.",
-                "[2026-03-23 07:54:54Z INFO ExecutionContext] checkout output before rotation",
+                "[2026-03-23 07:54:54Z INFO ExecutionContext] HOMERUN_STEP_OUTPUT:: checkout output before rotation",
             ].join("\n") + "\n"
         ).unwrap();
 
         std::fs::write(
             diag.join("Worker_20260323-075454-utc.log"),
             [
-                "[2026-03-23 07:54:55Z INFO ExecutionContext] checkout output after rotation",
+                "[2026-03-23 07:54:55Z INFO ExecutionContext] HOMERUN_STEP_OUTPUT:: checkout output after rotation",
                 "[2026-03-23 07:54:56Z INFO StepsRunner] No need for updating job result with current step result 'Succeeded'.",
             ].join("\n") + "\n"
         ).unwrap();
