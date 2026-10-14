@@ -1471,8 +1471,20 @@ impl RunnerManager {
             )
         };
 
-        // Prefer local Worker diagnostics. They are written while the step runs,
-        // unlike GitHub's downloadable log blob, which often appears only later.
+        // Prefer the runner's dedicated user-facing output file. It receives masked
+        // step output directly and never includes Worker diagnostic chatter.
+        let output_lines =
+            WorkerLogWatcher::read_step_output_from_disk(&work_dir, step_number);
+        if !output_lines.is_empty() {
+            return Ok(crate::api::steps::StepLogsResponse {
+                step_number,
+                step_name: step_name.clone(),
+                lines: output_lines,
+            });
+        }
+
+        // Compatibility fallback for patched runner builds that mirrored marked
+        // output into Worker diagnostics before the dedicated sidecar was added.
         let live_lines = self
             .step_watcher
             .get_step_logs(runner_id, step_number)
