@@ -9,7 +9,18 @@ interface UseJobStepsResult {
   loading: boolean;
   expandedStep: number | null;
   stepLogs: Record<number, string[]>;
+  stepLogErrors: Record<number, string>;
   toggleStep: (stepNumber: number) => void;
+}
+
+function errorMessage(error: unknown): string {
+  if (typeof error === "string") return error;
+  if (error instanceof Error) return error.message;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return "Unknown error while fetching step logs";
+  }
 }
 
 export function useJobSteps(runnerId: string | undefined, isBusy: boolean): UseJobStepsResult {
@@ -17,6 +28,7 @@ export function useJobSteps(runnerId: string | undefined, isBusy: boolean): UseJ
   const [loading, setLoading] = useState(false);
   const [expandedStep, setExpandedStep] = useState<number | null>(null);
   const [stepLogs, setStepLogs] = useState<Record<number, string[]>>({});
+  const [stepLogErrors, setStepLogErrors] = useState<Record<number, string>>({});
   const logCacheRef = useRef<Record<number, string[]>>({});
 
   // Poll steps every 1s when busy
@@ -25,6 +37,7 @@ export function useJobSteps(runnerId: string | undefined, isBusy: boolean): UseJ
       setStepsResponse(null);
       setExpandedStep(null);
       setStepLogs({});
+      setStepLogErrors({});
       logCacheRef.current = {};
       setLoading(false);
       return;
@@ -37,7 +50,7 @@ export function useJobSteps(runnerId: string | undefined, isBusy: boolean): UseJ
         const data = await api.getRunnerSteps(runnerId);
         setStepsResponse(data);
       } catch {
-        // ignore errors during polling
+        // Ignore transient errors while the daemon is polling runner state.
       } finally {
         setLoading(false);
       }
@@ -48,34 +61,70 @@ export function useJobSteps(runnerId: string | undefined, isBusy: boolean): UseJ
     return () => clearInterval(interval);
   }, [isBusy, runnerId]);
 
-  // Fetch step logs when a step is expanded, re-fetch every 5s if running
+  const currentStep = stepsResponse?.steps.find((step) => step.number === expandedStep);
+  const currentStepStatus = currentStep?.status;
+  const currentStepName = currentStep?.name;
+
+  // Fetch logs for the expanded step. Re-poll while it runs; retry on completion.
   useEffect(() => {
     if (expandedStep === null || !runnerId) return;
 
-    const currentStep = stepsResponse?.steps.find((s) => s.number === expandedStep);
-    const isRunning = currentStep?.status === "running";
+    const isRunning = currentStepStatus === "running";
     const isCached = logCacheRef.current[expandedStep] !== undefined;
 
-    // Skip if cached and not running
+    // Skip completed steps already fetched successfully.
     if (isCached && !isRunning) return;
+
+    // Clear a prior error/output while this attempt is in flight.
+    setStepLogErrors((previous) => {
+      if (!(expandedStep in previous)) return previous;
+      const next = { ...previous };
+      delete next[expandedStep];
+      return next;
+    });
+    setStepLogs((previous) => {
+      if (!(expandedStep in previous)) return previous;
+      const next = { ...previous };
+      delete next[expandedStep];
+      return next;
+    });
 
     const fetchLogs = async () => {
       try {
         const data = await api.getStepLogs(runnerId, expandedStep);
         const lines = data.lines;
 
-        // Cache only if step is completed (not running)
-        const step = stepsResponse?.steps.find((s) => s.number === expandedStep);
-        if (step && step.status !== "running") {
+        // Cache only after a step is no longer running.
+        if (currentStepStatus && currentStepStatus !== "running") {
           logCacheRef.current[expandedStep] = lines;
         }
 
-        setStepLogs((prev) => ({ ...prev, [expandedStep]: lines }));
-      } catch {
-        // GitHub API only returns logs for completed steps.
-        // Set empty array so UI shows "No log output" instead of "Fetching logs..." forever.
-        if (!logCacheRef.current[expandedStep]) {
-          setStepLogs((prev) => ({ ...prev, [expandedStep]: [] }));
+        setStepLogErrors((previous) => {
+          if (!(expandedStep in previous)) return previous;
+          const next = { ...previous };
+          delete next[expandedStep];
+          return next;
+        });
+        setStepLogs((previous) => ({ ...previous, [expandedStep]: lines }));
+      } catch (error) {
+        // GitHub may not publish logs until a running step completes. Preserve that
+        // expected state, but show failures for completed steps instead of hiding them.
+        if (isRunning) {
+          setStepLogErrors((previous) => {
+            if (!(expandedStep in previous)) return previous;
+            const next = { ...previous };
+            delete next[expandedStep];
+            return next;
+          });
+        } else {
+          setStepLogErrors((previous) => ({
+            ...previous,
+            [expandedStep]: errorMessage(error),
+          }));
+        }
+
+        if (logCacheRef.current[expandedStep] === undefined) {
+          setStepLogs((previous) => ({ ...previous, [expandedStep]: [] }));
         }
       }
     };
@@ -83,13 +132,12 @@ export function useJobSteps(runnerId: string | undefined, isBusy: boolean): UseJ
     fetchLogs();
 
     if (!isRunning) return;
-
     const interval = setInterval(fetchLogs, 5000);
     return () => clearInterval(interval);
-  }, [expandedStep, runnerId, stepsResponse]);
+  }, [expandedStep, runnerId, currentStepStatus, currentStepName]);
 
   const toggleStep = useCallback((stepNumber: number) => {
-    setExpandedStep((prev) => (prev === stepNumber ? null : stepNumber));
+    setExpandedStep((previous) => (previous === stepNumber ? null : stepNumber));
   }, []);
 
   return {
@@ -99,6 +147,7 @@ export function useJobSteps(runnerId: string | undefined, isBusy: boolean): UseJ
     loading,
     expandedStep,
     stepLogs,
+    stepLogErrors,
     toggleStep,
   };
 }
