@@ -278,7 +278,9 @@ export function JobProgress({
                     {stepLogErrors[step.number] ? (
                       <span
                         style={{
-                          color: "var(--accent-red)",
+                          color: stepLogErrors[step.number]?.startsWith("GitHub has not published")
+                            ? "var(--text-secondary)"
+                            : "var(--accent-red)",
                           whiteSpace: "pre-wrap",
                           wordBreak: "break-word",
                         }}
