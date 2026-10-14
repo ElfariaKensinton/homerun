@@ -232,7 +232,7 @@ export function RunnerDetail() {
     useOutletContext<RunnersContextType>();
   const { metrics } = useMetrics();
   const runner = runners.find((r) => r.config.id === id);
-  const { steps, stepsDiscovered, jobName, expandedStep, stepLogs, toggleStep } = useJobSteps(
+  const { steps, stepsDiscovered, jobName, expandedStep, stepLogs, stepLogErrors, toggleStep } = useJobSteps(
     id,
     runner?.state === "busy",
   );
@@ -823,6 +823,7 @@ export function RunnerDetail() {
             jobName={jobName}
             expandedStep={expandedStep}
             stepLogs={stepLogs}
+            stepLogErrors={stepLogErrors}
             onToggleStep={toggleStep}
             height={stepsHeight}
             resizeHandle={
