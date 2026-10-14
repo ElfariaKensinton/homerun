@@ -207,9 +207,6 @@ impl WorkerLogWatcher {
                     if newer != *log_path {
                         state.log_path = Some(newer);
                         state.file_offset = 0;
-                        state.steps.clear();
-                        state.step_logs.clear();
-                        state.step_log_bytes.clear();
                         // Fall through to read the new file immediately
                     } else {
                         return true;
@@ -238,6 +235,13 @@ impl WorkerLogWatcher {
         let new_text = String::from_utf8_lossy(&new_bytes[..complete_len]);
 
         for line in new_text.lines() {
+            if is_job_start_line(line) {
+                state.steps.clear();
+                state.step_logs.clear();
+                state.step_log_bytes.clear();
+                continue;
+            }
+
             if let Some(event) = parse_step_event(line) {
                 apply_step_event(&mut state.steps, event);
                 continue;
@@ -288,30 +292,43 @@ impl WorkerLogWatcher {
     /// these files after the job finishes, so step output remains available
     /// after the live watcher has been stopped or the daemon has restarted.
     pub fn read_step_logs_from_disk(work_dir: &Path, step_number: u16) -> Vec<String> {
-        let Some(log_path) = find_latest_worker_log(work_dir) else {
+        // Worker diagnostics roll over into multiple Worker log pages when they grow
+        // large. Replay every page in order and reset only at the start of a new job.
+        let log_paths = list_worker_logs(work_dir);
+        if log_paths.is_empty() {
             return Vec::new();
-        };
-        let Ok(content) = std::fs::read_to_string(log_path) else {
-            return Vec::new();
-        };
+        }
 
         let mut steps: Vec<StepInfo> = Vec::new();
         let mut logs: HashMap<u16, Vec<String>> = HashMap::new();
         let mut log_bytes: HashMap<u16, usize> = HashMap::new();
 
-        for line in content.lines() {
-            if let Some(event) = parse_step_event(line) {
-                apply_step_event(&mut steps, event);
+        for log_path in log_paths {
+            let Ok(content) = std::fs::read_to_string(log_path) else {
                 continue;
-            }
+            };
 
-            if let Some(number) = steps
-                .iter()
-                .rev()
-                .find(|step| step.status == StepStatus::Running)
-                .map(|step| step.number)
-            {
-                append_step_log(&mut logs, &mut log_bytes, number, line);
+            for line in content.lines() {
+                if is_job_start_line(line) {
+                    steps.clear();
+                    logs.clear();
+                    log_bytes.clear();
+                    continue;
+                }
+
+                if let Some(event) = parse_step_event(line) {
+                    apply_step_event(&mut steps, event);
+                    continue;
+                }
+
+                if let Some(number) = steps
+                    .iter()
+                    .rev()
+                    .find(|step| step.status == StepStatus::Running)
+                    .map(|step| step.number)
+                {
+                    append_step_log(&mut logs, &mut log_bytes, number, line);
+                }
             }
         }
 
@@ -399,8 +416,14 @@ fn apply_step_event(steps: &mut Vec<StepInfo>, event: StepEvent) {
     }
 }
 
-/// Find the newest `Worker_*.log` file in `{work_dir}/_diag/`.
-fn find_latest_worker_log(work_dir: &Path) -> Option<PathBuf> {
+/// True when a diagnostic line marks the beginning of a new job in the Worker process.
+/// Log page rollover does not repeat this marker, so step state can safely span pages.
+fn is_job_start_line(line: &str) -> bool {
+    line.contains(" INFO JobRunner] Starting the job execution context.")
+}
+
+/// List Worker diagnostic pages in filename/time order for replay across page rollovers.
+fn list_worker_logs(work_dir: &Path) -> Vec<PathBuf> {
     let diag_dir = work_dir.join("_diag");
     let read_dir = match std::fs::read_dir(&diag_dir) {
         Ok(rd) => rd,
@@ -410,27 +433,30 @@ fn find_latest_worker_log(work_dir: &Path) -> Option<PathBuf> {
                 diag_dir.display(),
                 e
             );
-            return None;
+            return Vec::new();
         }
     };
 
-    let mut best: Option<(PathBuf, std::time::SystemTime)> = None;
+    let mut paths = Vec::new();
     for entry in read_dir.flatten() {
         let path = entry.path();
         let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if file_name.starts_with("Worker_") && file_name.ends_with(".log") {
-            if let Ok(meta) = entry.metadata() {
-                let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
-                if best.as_ref().is_none_or(|(_, t)| modified > *t) {
-                    best = Some((path, modified));
-                }
-            }
+            paths.push(path);
         }
     }
-
-    best.map(|(p, _)| p)
+    paths.sort();
+    paths
 }
 
+/// Find the newest Worker log page in the _diag directory.
+fn find_latest_worker_log(work_dir: &Path) -> Option<PathBuf> {
+    list_worker_logs(work_dir).into_iter().max_by_key(|path| {
+        std::fs::metadata(path)
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(std::time::UNIX_EPOCH)
+    })
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -518,7 +544,7 @@ mod tests {
         let log_content = "\
 [2026-03-23 07:54:53Z INFO StepsRunner] Processing step: DisplayName='Checkout'\n\
 [2026-03-23 07:54:53Z INFO StepsRunner] Starting the step.\n\
-[2026-03-23 07:54:54Z INFO ProcessInvokerWrapper] checkout output line\n\
+[2026-03-23 07:54:54Z INFO ExecutionContext] checkout output line\n\
 [2026-03-23 07:54:55Z INFO StepsRunner] No need for updating job result with current step result 'Succeeded'.\n\
 [2026-03-23 07:54:55Z INFO StepsRunner] Processing step: DisplayName='Build'\n\
 [2026-03-23 07:54:55Z INFO StepsRunner] Starting the step.\n";
@@ -555,7 +581,7 @@ mod tests {
         let content = "\
 [2026-03-23 07:54:53Z INFO StepsRunner] Processing step: DisplayName='Checkout'\n\
 [2026-03-23 07:54:53Z INFO StepsRunner] Starting the step.\n\
-[2026-03-23 07:54:54Z INFO ProcessInvokerWrapper] checkout output line\n\
+[2026-03-23 07:54:54Z INFO ExecutionContext] checkout output line\n\
 [2026-03-23 07:54:55Z INFO StepsRunner] No need for updating job result with current step result 'Succeeded'.\n";
         std::fs::write(&log_path, content).unwrap();
 
@@ -691,10 +717,13 @@ mod tests {
 
         // Create an "old" Worker log with one step
         let old_log = diag.join("Worker_20260323-070000-utc.log");
-        let old_content = "\
-[2026-03-23 07:00:00Z INFO StepsRunner] Processing step: DisplayName='OldStep'\n\
-[2026-03-23 07:00:00Z INFO StepsRunner] Starting the step.\n\
-[2026-03-23 07:00:01Z INFO StepsRunner] No need for updating job result with current step result 'Succeeded'.\n";
+let old_content = [
+            "[2026-03-23 07:00:00Z INFO JobRunner] Starting the job execution context.",
+            "[2026-03-23 07:00:00Z INFO StepsRunner] Processing step: DisplayName='OldStep'",
+            "[2026-03-23 07:00:00Z INFO StepsRunner] Starting the step.",
+            "[2026-03-23 07:00:01Z INFO ExecutionContext] old job output",
+            "[2026-03-23 07:00:01Z INFO StepsRunner] No need for updating job result with current step result 'Succeeded'.",
+        ].join("\n") + "\n";
         std::fs::write(&old_log, old_content).unwrap();
 
         let watcher = WorkerLogWatcher::new();
@@ -712,9 +741,11 @@ mod tests {
         // Sleep briefly so the new file has a strictly newer mtime
         std::thread::sleep(std::time::Duration::from_millis(50));
         let new_log = diag.join("Worker_20260323-080000-utc.log");
-        let new_content = "\
-[2026-03-23 08:00:00Z INFO StepsRunner] Processing step: DisplayName='NewStep'\n\
-[2026-03-23 08:00:00Z INFO StepsRunner] Starting the step.\n";
+let new_content = [
+            "[2026-03-23 08:00:00Z INFO JobRunner] Starting the job execution context.",
+            "[2026-03-23 08:00:00Z INFO StepsRunner] Processing step: DisplayName='NewStep'",
+            "[2026-03-23 08:00:00Z INFO StepsRunner] Starting the step.",
+        ].join("\n") + "\n";
         std::fs::write(&new_log, new_content).unwrap();
 
         // Second poll: no new bytes on old file → checks for newer log → switches
@@ -724,4 +755,95 @@ mod tests {
         assert_eq!(resp.steps[0].name, "NewStep");
         assert_eq!(resp.steps[0].status, StepStatus::Running);
     }
+    #[tokio::test]
+    async fn test_watcher_keeps_running_step_logs_across_worker_log_page_rotation() {
+        let dir = tempfile::tempdir().unwrap();
+        let diag = dir.path().join("_diag");
+        std::fs::create_dir_all(&diag).unwrap();
+
+        let first_page = diag.join("Worker_20260323-075453-utc.log");
+        let first_content = [
+            "[2026-03-23 07:54:53Z INFO JobRunner] Starting the job execution context.",
+            "[2026-03-23 07:54:53Z INFO StepsRunner] Processing step: DisplayName='Build'",
+            "[2026-03-23 07:54:53Z INFO StepsRunner] Starting the step.",
+            "[2026-03-23 07:54:54Z INFO ExecutionContext] output before page rotation",
+        ].join("\n") + "\n";
+        std::fs::write(&first_page, first_content).unwrap();
+
+        let watcher = WorkerLogWatcher::new();
+        watcher
+            .start_watching("runner-rotation", "rotation-job", dir.path())
+            .await;
+        assert!(watcher.poll("runner-rotation").await);
+        assert_eq!(
+            watcher.get_step_logs("runner-rotation", 1).await.unwrap(),
+            vec!["output before page rotation".to_string()]
+        );
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let second_page = diag.join("Worker_20260323-075454-utc.log");
+        let second_content = [
+            "[2026-03-23 07:54:55Z INFO ExecutionContext] output after page rotation",
+            "[2026-03-23 07:54:56Z INFO StepsRunner] No need for updating job result with current step result 'Succeeded'.",
+        ].join("\n") + "\n";
+        std::fs::write(&second_page, second_content).unwrap();
+
+        assert!(watcher.poll("runner-rotation").await);
+        let response = watcher.get_steps("runner-rotation").await.unwrap();
+        assert_eq!(response.steps.len(), 1);
+        assert_eq!(response.steps[0].status, StepStatus::Succeeded);
+        assert_eq!(
+            watcher.get_step_logs("runner-rotation", 1).await.unwrap(),
+            vec![
+                "output before page rotation".to_string(),
+                "output after page rotation".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_read_step_logs_from_disk_across_worker_pages_and_job_boundaries() {
+        let dir = tempfile::tempdir().unwrap();
+        let diag = dir.path().join("_diag");
+        std::fs::create_dir_all(&diag).unwrap();
+
+        std::fs::write(
+            diag.join("Worker_20260323-070000-utc.log"),
+            [
+                "[2026-03-23 07:00:00Z INFO JobRunner] Starting the job execution context.",
+                "[2026-03-23 07:00:00Z INFO StepsRunner] Processing step: DisplayName='OldStep'",
+                "[2026-03-23 07:00:00Z INFO StepsRunner] Starting the step.",
+                "[2026-03-23 07:00:01Z INFO ExecutionContext] old job output",
+                "[2026-03-23 07:00:02Z INFO StepsRunner] No need for updating job result with current step result 'Succeeded'.",
+            ].join("\n") + "\n"
+        ).unwrap();
+
+        std::fs::write(
+            diag.join("Worker_20260323-075453-utc.log"),
+            [
+                "[2026-03-23 07:54:53Z INFO JobRunner] Starting the job execution context.",
+                "[2026-03-23 07:54:53Z INFO StepsRunner] Processing step: DisplayName='Checkout'",
+                "[2026-03-23 07:54:53Z INFO StepsRunner] Starting the step.",
+                "[2026-03-23 07:54:54Z INFO ExecutionContext] checkout output before rotation",
+            ].join("\n") + "\n"
+        ).unwrap();
+
+        std::fs::write(
+            diag.join("Worker_20260323-075454-utc.log"),
+            [
+                "[2026-03-23 07:54:55Z INFO ExecutionContext] checkout output after rotation",
+                "[2026-03-23 07:54:56Z INFO StepsRunner] No need for updating job result with current step result 'Succeeded'.",
+            ].join("\n") + "\n"
+        ).unwrap();
+
+        assert_eq!(
+            WorkerLogWatcher::read_step_logs_from_disk(dir.path(), 1),
+            vec![
+                "checkout output before rotation".to_string(),
+                "checkout output after rotation".to_string()
+            ]
+        );
+        assert!(WorkerLogWatcher::read_step_logs_from_disk(dir.path(), 2).is_empty());
+    }
+
 }
