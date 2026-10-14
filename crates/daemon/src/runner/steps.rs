@@ -74,6 +74,7 @@ fn parse_worker_timestamp(s: &str) -> Option<DateTime<Utc>> {
 /// Expected patterns:
 /// - `[<ts> INFO StepsRunner] Processing step: DisplayName='<name>'` → Discovered
 /// - `[<ts> INFO StepsRunner] Starting the step.` → Started
+[2026-03-23 07:54:54Z INFO ProcessInvokerWrapper] checkout output line\n\
 /// - `[<ts> INFO StepsRunner] … current step result '<Result>'.` → Completed
 pub fn parse_step_event(line: &str) -> Option<StepEvent> {
     // Early return if not a StepsRunner line
