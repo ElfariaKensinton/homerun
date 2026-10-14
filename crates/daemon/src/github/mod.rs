@@ -401,6 +401,82 @@ impl GitHubClient {
         Ok(body)
     }
 
+    /// Fetch plain-text logs for one GitHub Actions step.
+    ///
+    /// HomeRun step numbers are 1-based. GitHub's step-log endpoint uses a
+    /// zero-based position, so resolve the local display name against job
+    /// metadata first. Fall back to the same position when names differ.
+    pub async fn get_job_step_logs(
+        &self,
+        owner: &str,
+        repo: &str,
+        job_id: u64,
+        step_name: &str,
+        local_step_number: u16,
+    ) -> Result<String> {
+        #[derive(Deserialize)]
+        struct JobStep {
+            name: String,
+        }
+        #[derive(Deserialize)]
+        struct JobDetails {
+            #[serde(default)]
+            steps: Vec<JobStep>,
+        }
+
+        let route = format!("/repos/{owner}/{repo}/actions/jobs/{job_id}");
+        let job: JobDetails = self.octocrab.get(&route, None::<&()>).await?;
+        let normalize = |name: &str| -> String {
+            name.chars()
+                .filter(|ch| ch.is_ascii_alphanumeric())
+                .map(|ch| ch.to_ascii_lowercase())
+                .collect()
+        };
+        let requested = normalize(step_name);
+        let exact_index = job.steps.iter().position(|candidate| normalize(&candidate.name) == requested);
+        let fuzzy_index = if requested.len() >= 4 {
+            job.steps.iter().position(|candidate| {
+                let candidate_name = normalize(&candidate.name);
+                candidate_name.len() >= 4
+                    && (candidate_name.contains(&requested) || requested.contains(&candidate_name))
+            })
+        } else {
+            None
+        };
+        let fallback_index = usize::from(local_step_number.saturating_sub(1));
+        let step_index = exact_index
+            .or(fuzzy_index)
+            .or_else(|| (fallback_index < job.steps.len()).then_some(fallback_index))
+            .ok_or_else(|| anyhow::anyhow!(
+                "Could not map HomeRun step {local_step_number} ('{step_name}') to GitHub job {job_id}; GitHub reported {} steps",
+                job.steps.len()
+            ))?;
+
+        let url = format!(
+            "https://api.github.com/repos/{owner}/{repo}/actions/jobs/{job_id}/steps/{step_index}/logs"
+        );
+        let response = reqwest::Client::new()
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.token))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "homerun")
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            let detail: String = body.chars().take(240).collect();
+            bail!(
+                "Failed to fetch logs for step '{step_name}' (GitHub step index {step_index}): HTTP {}{}",
+                status.as_u16(),
+                if detail.trim().is_empty() { String::new() } else { format!(": {detail}") }
+            );
+        }
+
+        Ok(response.text().await?)
+    }
+
     /// Fetch the error/failure message for a completed job via check-run annotations.
     /// Searches recent runs to find the job by runner name, then fetches annotations.
     pub async fn get_job_failure_message(
