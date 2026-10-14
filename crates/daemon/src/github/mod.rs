@@ -433,7 +433,10 @@ impl GitHubClient {
                 .collect()
         };
         let requested = normalize(step_name);
-        let exact_index = job.steps.iter().position(|candidate| normalize(&candidate.name) == requested);
+        let exact_index = job
+            .steps
+            .iter()
+            .position(|candidate| normalize(&candidate.name) == requested);
         let fuzzy_index = if requested.len() >= 4 {
             job.steps.iter().position(|candidate| {
                 let candidate_name = normalize(&candidate.name);
@@ -447,10 +450,12 @@ impl GitHubClient {
         let step_index = exact_index
             .or(fuzzy_index)
             .or_else(|| (fallback_index < job.steps.len()).then_some(fallback_index))
-            .ok_or_else(|| anyhow::anyhow!(
-                "Could not map HomeRun step {local_step_number} ('{step_name}') to GitHub job {job_id}; GitHub reported {} steps",
-                job.steps.len()
-            ))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Could not map HomeRun step {local_step_number} ('{step_name}') to GitHub job {job_id}; GitHub reported {} steps",
+                    job.steps.len()
+                )
+            })?;
 
         let url = format!(
             "https://api.github.com/repos/{owner}/{repo}/actions/jobs/{job_id}/steps/{step_index}/logs"
@@ -470,7 +475,11 @@ impl GitHubClient {
             bail!(
                 "Failed to fetch logs for step '{step_name}' (GitHub step index {step_index}): HTTP {}{}",
                 status.as_u16(),
-                if detail.trim().is_empty() { String::new() } else { format!(": {detail}") }
+                if detail.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(": {detail}")
+                }
             );
         }
 
