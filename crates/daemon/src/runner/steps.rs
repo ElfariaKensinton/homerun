@@ -717,7 +717,7 @@ mod tests {
 
         // Create an "old" Worker log with one step
         let old_log = diag.join("Worker_20260323-070000-utc.log");
-let old_content = [
+        let old_content = [
             "[2026-03-23 07:00:00Z INFO JobRunner] Starting the job execution context.",
             "[2026-03-23 07:00:00Z INFO StepsRunner] Processing step: DisplayName='OldStep'",
             "[2026-03-23 07:00:00Z INFO StepsRunner] Starting the step.",
@@ -741,7 +741,7 @@ let old_content = [
         // Sleep briefly so the new file has a strictly newer mtime
         std::thread::sleep(std::time::Duration::from_millis(50));
         let new_log = diag.join("Worker_20260323-080000-utc.log");
-let new_content = [
+        let new_content = [
             "[2026-03-23 08:00:00Z INFO JobRunner] Starting the job execution context.",
             "[2026-03-23 08:00:00Z INFO StepsRunner] Processing step: DisplayName='NewStep'",
             "[2026-03-23 08:00:00Z INFO StepsRunner] Starting the step.",
@@ -755,6 +755,7 @@ let new_content = [
         assert_eq!(resp.steps[0].name, "NewStep");
         assert_eq!(resp.steps[0].status, StepStatus::Running);
     }
+
     #[tokio::test]
     async fn test_watcher_keeps_running_step_logs_across_worker_log_page_rotation() {
         let dir = tempfile::tempdir().unwrap();
@@ -845,5 +846,4 @@ let new_content = [
         );
         assert!(WorkerLogWatcher::read_step_logs_from_disk(dir.path(), 2).is_empty());
     }
-
 }
