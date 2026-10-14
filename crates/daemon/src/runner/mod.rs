@@ -1498,18 +1498,8 @@ impl RunnerManager {
             });
         }
 
-        // Do not turn a transient "log blob not published yet" into a 502 while
-        // the job is executing. The clients will poll this endpoint for updates.
-        if runner_busy {
-            return Ok(crate::api::steps::StepLogsResponse {
-                step_number,
-                step_name,
-                lines: Vec::new(),
-            });
-        }
-
-        // Do not turn a transient "log blob not published yet" into a 502 while
-        // the job is executing. The clients will poll this endpoint for updates.
+        // Do not turn a missing log blob into a 502 while the job is executing.
+        // The clients will poll this endpoint for updated local output.
         if runner_busy {
             return Ok(crate::api::steps::StepLogsResponse {
                 step_number,
