@@ -1433,77 +1433,112 @@ impl RunnerManager {
         &self,
         runner_id: &str,
         step_number: u16,
-    ) -> Option<crate::api::steps::StepLogsResponse> {
-        // 1. Get step info to find the step name
-        let steps_response = self.get_steps(runner_id).await?;
+    ) -> std::result::Result<
+        crate::api::steps::StepLogsResponse,
+        crate::runner::steps::StepLogError,
+    > {
+        let steps_response = self.get_steps(runner_id).await.ok_or_else(|| {
+            crate::runner::steps::StepLogError::NotFound(format!(
+                "No step data is available for runner '{runner_id}'."
+            ))
+        })?;
         let step = steps_response
             .steps
             .iter()
-            .find(|s| s.number == step_number)?;
+            .find(|step| step.number == step_number)
+            .ok_or_else(|| {
+                crate::runner::steps::StepLogError::NotFound(format!(
+                    "Step {step_number} was not found in the latest job for runner '{runner_id}'."
+                ))
+            })?;
         let step_name = step.name.clone();
 
-        // 2. Get job_id from the live job context, or from the most recent
-        // history URL (completed jobs store URLs ending in /job/{job_id}).
+        // Find the repository and job ID. Completed jobs retain the job ID in their history URL.
         let (owner, repo, live_job_id) = {
             let runners = self.runners.read().await;
-            let runner = runners.get(runner_id)?;
+            let runner = runners.get(runner_id).ok_or_else(|| {
+                crate::runner::steps::StepLogError::NotFound(format!(
+                    "Runner '{runner_id}' no longer exists."
+                ))
+            })?;
             (
                 runner.config.repo_owner.clone(),
                 runner.config.repo_name.clone(),
                 runner.job_context.as_ref().and_then(|context| context.job_id),
             )
         };
+
         let job_id = if let Some(job_id) = live_job_id {
             job_id
         } else {
             let history = self.job_history.read().await;
-            let run_url = history.get(runner_id)?.last()?.run_url.as_deref()?;
-            let (_, id) = run_url.rsplit_once("/job/")?;
-            id.split('/').next()?.parse::<u64>().ok()?
+            let entry = history
+                .get(runner_id)
+                .and_then(|entries| entries.last())
+                .ok_or_else(|| {
+                    crate::runner::steps::StepLogError::NotFound(format!(
+                        "No completed job history is available for runner '{runner_id}'."
+                    ))
+                })?;
+            let run_url = entry.run_url.as_deref().ok_or_else(|| {
+                crate::runner::steps::StepLogError::NotFound(
+                    "The latest job has no GitHub job URL, so its logs cannot be located."
+                        .to_string(),
+                )
+            })?;
+            let (_, id) = run_url.rsplit_once("/job/").ok_or_else(|| {
+                crate::runner::steps::StepLogError::NotFound(format!(
+                    "The latest job URL does not contain a GitHub job ID: {run_url}"
+                ))
+            })?;
+            id.split('/')
+                .next()
+                .and_then(|value| value.parse::<u64>().ok())
+                .ok_or_else(|| {
+                    crate::runner::steps::StepLogError::NotFound(format!(
+                        "Could not parse the GitHub job ID from URL: {run_url}"
+                    ))
+                })?
         };
 
-        // 3. Get auth token (same pattern as start_job_context_poller)
-        let token = {
-            let t = self.auth_token.read().await;
-            t.clone()
-        };
-        let token = token?;
-        let gh = crate::github::GitHubClient::new(Some(token)).ok()?;
+        let token = self.auth_token.read().await.clone().ok_or_else(|| {
+            crate::runner::steps::StepLogError::Unauthorized(
+                "No GitHub authentication token is configured. Sign in to GitHub in HomeRun before loading step logs.".to_string(),
+            )
+        })?;
+        let gh = GitHubClient::new(Some(token)).map_err(|error| {
+            crate::runner::steps::StepLogError::Upstream(format!(
+                "Could not initialize the GitHub API client: {error:#}"
+            ))
+        })?;
 
-        // 4. Fetch via cache
-        let raw_log = match self
+        let raw_log = self
             .step_log_cache
             .get_or_fetch(job_id, &gh, &owner, &repo)
             .await
-        {
-            Ok(log) => log,
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to fetch job logs for runner {} (job_id={}): {:#}",
-                    runner_id,
-                    job_id,
-                    e
-                );
-                return None;
-            }
-        };
+            .map_err(|error| {
+                crate::runner::steps::StepLogError::Upstream(format!(
+                    "GitHub API could not fetch logs for {owner}/{repo}, job ID {job_id}: {error:#}"
+                ))
+            })?;
         let sections = crate::github::parse_job_log_sections(&raw_log);
+        let section = sections
+            .iter()
+            .find(|(name, _)| name == &step_name)
+            .ok_or_else(|| {
+                let available = sections
+                    .iter()
+                    .map(|(name, _)| name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                crate::runner::steps::StepLogError::NotFound(format!(
+                    "The GitHub log for job {job_id} does not contain step '{step_name}'. Available log sections: {}",
+                    if available.is_empty() { "(none)" } else { &available }
+                ))
+            })?;
+        let lines = section.1.lines().map(|line| line.to_string()).collect();
 
-        // 5. Match by step name (not index)
-        let section = match sections.iter().find(|(name, _)| name == &step_name) {
-            Some(s) => s,
-            None => {
-                tracing::debug!(
-                    "Step '{}' not found in job log sections (found: {:?})",
-                    step_name,
-                    sections.iter().map(|(n, _)| n).collect::<Vec<_>>()
-                );
-                return None;
-            }
-        };
-        let lines: Vec<String> = section.1.lines().map(|l| l.to_string()).collect();
-
-        Some(crate::api::steps::StepLogsResponse {
+        Ok(crate::api::steps::StepLogsResponse {
             step_number,
             step_name,
             lines,

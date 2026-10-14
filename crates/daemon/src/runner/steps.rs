@@ -7,6 +7,14 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::warn;
 
+/// Reason step-log retrieval failed, preserving local-state and upstream API errors.
+#[derive(Debug)]
+pub enum StepLogError {
+    NotFound(String),
+    Unauthorized(String),
+    Upstream(String),
+}
+
 /// Status of a single job step.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

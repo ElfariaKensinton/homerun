@@ -29,13 +29,31 @@ pub async fn get_steps(
 pub async fn get_step_logs(
     State(state): State<AppState>,
     Path((id, step_number)): Path<(String, u16)>,
-) -> Result<Json<StepLogsResponse>, StatusCode> {
+) -> Result<Json<StepLogsResponse>, (StatusCode, String)> {
     state
         .runner_manager
         .get_step_logs(&id, step_number)
         .await
         .map(Json)
-        .ok_or(StatusCode::NOT_FOUND)
+        .map_err(|error| {
+            tracing::warn!(
+                runner_id = %id,
+                step_number,
+                error = ?error,
+                "Failed to load job step logs"
+            );
+            match error {
+                crate::runner::steps::StepLogError::NotFound(message) => {
+                    (StatusCode::NOT_FOUND, message)
+                }
+                crate::runner::steps::StepLogError::Unauthorized(message) => {
+                    (StatusCode::UNAUTHORIZED, message)
+                }
+                crate::runner::steps::StepLogError::Upstream(message) => {
+                    (StatusCode::BAD_GATEWAY, message)
+                }
+            }
+        })
 }
 
 #[cfg(test)]
