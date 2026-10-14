@@ -122,6 +122,8 @@ pub fn parse_step_event(line: &str) -> Option<StepEvent> {
 struct RunnerStepState {
     job_name: String,
     steps: Vec<StepInfo>,
+    step_logs: HashMap<u16, Vec<String>>,
+    step_log_bytes: HashMap<u16, usize>,
     file_offset: u64,
     log_path: Option<PathBuf>,
     work_dir: PathBuf,
@@ -158,6 +160,8 @@ impl WorkerLogWatcher {
         let state = RunnerStepState {
             job_name: job_name.to_string(),
             steps: Vec::new(),
+            step_logs: HashMap::new(),
+            step_log_bytes: HashMap::new(),
             file_offset: 0,
             log_path: None,
             work_dir: work_dir.to_path_buf(),
@@ -226,6 +230,25 @@ impl WorkerLogWatcher {
         for line in new_text.lines() {
             if let Some(event) = parse_step_event(line) {
                 apply_step_event(&mut state.steps, event);
+                continue;
+            }
+
+            // The Worker diagnostic file contains the actual per-step execution
+            // trace. Keep lines under the currently running step so clients can
+            // display them immediately instead of waiting for GitHub's log blob.
+            if let Some(step_number) = state
+                .steps
+                .iter()
+                .rev()
+                .find(|step| step.status == StepStatus::Running)
+                .map(|step| step.number)
+            {
+                append_step_log(
+                    &mut state.step_logs,
+                    &mut state.step_log_bytes,
+                    step_number,
+                    line,
+                );
             }
         }
 
@@ -242,6 +265,91 @@ impl WorkerLogWatcher {
             steps: state.steps.clone(),
             steps_discovered: state.steps.len(),
         })
+    }
+
+    /// Return log lines captured so far for a step that is being watched.
+    pub async fn get_step_logs(&self, runner_id: &str, step_number: u16) -> Option<Vec<String>> {
+        let map = self.step_state.read().await;
+        let state = map.get(runner_id)?;
+        Some(state.step_logs.get(&step_number).cloned().unwrap_or_default())
+    }
+
+    /// Reconstruct step logs from the last on-disk Worker log. The runner keeps
+    /// these files after the job finishes, so step output remains available
+    /// after the live watcher has been stopped or the daemon has restarted.
+    pub fn read_step_logs_from_disk(work_dir: &Path, step_number: u16) -> Vec<String> {
+        let Some(log_path) = find_latest_worker_log(work_dir) else {
+            return Vec::new();
+        };
+        let Ok(content) = std::fs::read_to_string(log_path) else {
+            return Vec::new();
+        };
+
+        let mut steps = Vec::new();
+        let mut logs: HashMap<u16, Vec<String>> = HashMap::new();
+        let mut log_bytes: HashMap<u16, usize> = HashMap::new();
+
+        for line in content.lines() {
+            if let Some(event) = parse_step_event(line) {
+                apply_step_event(&mut steps, event);
+                continue;
+            }
+
+            if let Some(number) = steps
+                .iter()
+                .rev()
+                .find(|step: &&StepInfo| step.status == StepStatus::Running)
+                .map(|step| step.number)
+            {
+                append_step_log(&mut logs, &mut log_bytes, number, line);
+            }
+        }
+
+        logs.remove(&step_number).unwrap_or_default()
+    }
+}
+
+const MAX_STEP_LOG_LINES: usize = 4_000;
+const MAX_STEP_LOG_BYTES: usize = 1024 * 1024;
+
+/// Strip the runner's timestamp/logger prefix so the view contains readable
+/// execution output while retaining the original line when no prefix is found.
+fn worker_log_message(line: &str) -> String {
+    if line.starts_with('[') {
+        if let Some(end) = line.find("] ") {
+            return line[end + 2..].to_string();
+        }
+    }
+    line.to_string()
+}
+
+fn append_step_log(
+    logs: &mut HashMap<u16, Vec<String>>,
+    byte_counts: &mut HashMap<u16, usize>,
+    step_number: u16,
+    line: &str,
+) {
+    let mut message = worker_log_message(line);
+    if message.is_empty() {
+        return;
+    }
+
+    // Prevent one noisy build step from growing daemon memory/history without bound.
+    if message.len() > MAX_STEP_LOG_BYTES {
+        message = message.chars().take(MAX_STEP_LOG_BYTES).collect();
+    }
+
+    let entries = logs.entry(step_number).or_default();
+    let bytes = byte_counts.entry(step_number).or_default();
+    *bytes += message.len();
+    entries.push(message);
+
+    while entries.len() > MAX_STEP_LOG_LINES || *bytes > MAX_STEP_LOG_BYTES {
+        if entries.is_empty() {
+            *bytes = 0;
+            break;
+        }
+        *bytes = bytes.saturating_sub(entries.remove(0).len());
     }
 }
 
