@@ -5,22 +5,39 @@
 pub fn resolve_shell_path() -> Option<String> {
     use std::process::Stdio;
 
+    const BEGIN: &str = "__HOMERUN_PATH_BEGIN__";
+    const END: &str = "__HOMERUN_PATH_END__";
+
     // Fall back to /bin/sh (guaranteed on any Unix) rather than a specific
-    // shell like zsh — zsh is the macOS default but is absent on minimal Linux
-    // (e.g. a container), where the fallback would otherwise fail to spawn.
+    // shell like zsh — zsh is the macOS default but is absent on minimal Linux.
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-    let output = std::process::Command::new(&shell)
-        .args(["-l", "-c", "echo $PATH"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if path.is_empty() {
-        None
-    } else {
-        Some(path)
+    let script = format!("printf '%s%s%s' '{BEGIN}' \"$PATH\" '{END}'");
+
+    // Login shells load .zprofile/.profile. Interactive login shells additionally
+    // load .zshrc/.bashrc, where tools such as pyenv/uv may configure Python.
+    // Marker parsing keeps startup noise from corrupting the PATH we inherit.
+    for flags in [&["-l", "-c"][..], &["-l", "-i", "-c"][..]] {
+        let output = std::process::Command::new(&shell)
+            .args(flags)
+            .arg(&script)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .ok();
+        let Some(output) = output else { continue };
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if let Some(start) = stdout.rfind(BEGIN) {
+            let rest = &stdout[start + BEGIN.len()..];
+            if let Some(end) = rest.find(END) {
+                let path = rest[..end].trim();
+                if !path.is_empty() {
+                    return Some(path.to_string());
+                }
+            }
+        }
     }
+    None
 }
 
 /// On Windows the system PATH is usually inherited from the environment,
