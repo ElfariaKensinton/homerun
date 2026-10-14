@@ -31,32 +31,39 @@ export function useJobSteps(runnerId: string | undefined, isBusy: boolean): UseJ
   const [stepLogErrors, setStepLogErrors] = useState<Record<number, string>>({});
   const logCacheRef = useRef<Record<number, string[]>>({});
 
-  // Poll steps every 1s when busy
+  // Switching runners must not carry the previous runner's expanded step/logs over.
   useEffect(() => {
-    if (!isBusy || !runnerId) {
+    setStepsResponse(null);
+    setExpandedStep(null);
+    setStepLogs({});
+    setStepLogErrors({});
+    logCacheRef.current = {};
+  }, [runnerId]);
+
+  // Fetch once while idle so the most recent completed job remains inspectable.
+  // Poll more frequently while a job is active.
+  useEffect(() => {
+    if (!runnerId) {
       setStepsResponse(null);
-      setExpandedStep(null);
-      setStepLogs({});
-      setStepLogErrors({});
-      logCacheRef.current = {};
       setLoading(false);
       return;
     }
-
-    setLoading(true);
 
     const fetchSteps = async () => {
       try {
         const data = await api.getRunnerSteps(runnerId);
         setStepsResponse(data);
       } catch {
-        // Ignore transient errors while the daemon is polling runner state.
+        // Ignore transient errors during daemon startup/state transitions.
       } finally {
         setLoading(false);
       }
     };
 
+    setLoading(true);
     fetchSteps();
+    if (!isBusy) return;
+
     const interval = setInterval(fetchSteps, 1000);
     return () => clearInterval(interval);
   }, [isBusy, runnerId]);
@@ -65,85 +72,65 @@ export function useJobSteps(runnerId: string | undefined, isBusy: boolean): UseJ
   const currentStepStatus = currentStep?.status;
   const currentStepName = currentStep?.name;
 
-  // Fetch logs for the expanded step. Re-poll while it runs; retry on completion.
+  // Fetch live local Worker output while busy. Keep retrying through transient
+  // GitHub 404s, then perform a final fetch after the job completes.
   useEffect(() => {
     if (expandedStep === null || !runnerId) return;
 
     const isRunning = currentStepStatus === "running";
     const isCached = logCacheRef.current[expandedStep] !== undefined;
-
-    // Skip completed steps already fetched successfully.
     if (isCached && !isRunning) return;
 
-    // Clear a prior error/output while this attempt is in flight.
-    setStepLogErrors((previous) => {
-      if (!(expandedStep in previous)) return previous;
-      const next = { ...previous };
-      delete next[expandedStep];
-      return next;
-    });
-    setStepLogs((previous) => {
-      if (!(expandedStep in previous)) return previous;
-      const next = { ...previous };
-      delete next[expandedStep];
-      return next;
-    });
+    const clearError = () => {
+      setStepLogErrors((previous) => {
+        if (!(expandedStep in previous)) return previous;
+        const next = { ...previous };
+        delete next[expandedStep];
+        return next;
+      });
+    };
 
     const fetchLogs = async () => {
       try {
         const data = await api.getStepLogs(runnerId, expandedStep);
         const lines = data.lines;
 
-        // Cache only after a step is no longer running.
-        if (currentStepStatus && currentStepStatus !== "running") {
-          logCacheRef.current[expandedStep] = lines;
+        if (lines.length === 0 && isBusy) {
+          setStepLogErrors((previous) => ({
+            ...previous,
+            [expandedStep]: "Waiting for live step output… Retrying...",
+          }));
+          // Keep the last non-empty response on screen and do not cache an empty poll.
+          return;
         }
 
-        setStepLogErrors((previous) => {
-          if (!(expandedStep in previous)) return previous;
-          const next = { ...previous };
-          delete next[expandedStep];
-          return next;
-        });
+        clearError();
         setStepLogs((previous) => ({ ...previous, [expandedStep]: lines }));
+        if (currentStepStatus && currentStepStatus !== "running" && lines.length > 0) {
+          logCacheRef.current[expandedStep] = lines;
+        }
       } catch (error) {
         const message = errorMessage(error);
         const logsNotReady = message.includes("HTTP 404") || message.includes("BlobNotFound");
 
-        // GitHub can accept the job/step request before the log blob is published.
-        // While the runner is busy, keep retrying instead of caching a transient 404
-        // as a permanent "No log output" result.
         if (isBusy && logsNotReady) {
           setStepLogErrors((previous) => ({
             ...previous,
             [expandedStep]: "GitHub has not published this step's logs yet. Retrying...",
           }));
-        } else if (isRunning) {
-          setStepLogErrors((previous) => {
-            if (!(expandedStep in previous)) return previous;
-            const next = { ...previous };
-            delete next[expandedStep];
-            return next;
-          });
         } else {
           setStepLogErrors((previous) => ({
             ...previous,
             [expandedStep]: message,
           }));
         }
-
-        if (logCacheRef.current[expandedStep] === undefined) {
-          setStepLogs((previous) => ({ ...previous, [expandedStep]: [] }));
-        }
       }
     };
 
     fetchLogs();
-
-    // Logs may become available only after the individual step completes, and
-    // sometimes only later in the overall job. Retry while the runner is busy.
     if (!isBusy) return;
-    const interval = setInterval(fetchLogs, 5000);
+
+    const interval = setInterval(fetchLogs, 2000);
     return () => clearInterval(interval);
   }, [expandedStep, runnerId, currentStepStatus, currentStepName, isBusy]);
 
