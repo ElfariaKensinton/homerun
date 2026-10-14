@@ -39,6 +39,15 @@ const BOOTSTRAP_SCRIPT: &str = r#"set -e
 cd /workspace
 rm -f .runner .runner_migrated .credentials .credentials_rsaparams
 ./config.sh --url "$HOMERUN_RUNNER_URL" --token "$HOMERUN_RUNNER_TOKEN" --name "$HOMERUN_RUNNER_NAME" --labels "$HOMERUN_RUNNER_LABELS" --unattended --replace
+
+# Refresh pip at container startup instead of inheriting the older Ubuntu apt version.
+# Install into the runner user's site-packages so PEP 668 system-Python protection stays intact.
+if command -v python3 >/dev/null 2>&1 && python3 -m pip --version >/dev/null 2>&1; then
+    python3 -m pip install --user --break-system-packages --no-cache-dir --upgrade pip
+    export PATH="$HOME/.local/bin:$PATH"
+    python3 -m pip --version
+fi
+
 exec ./run.sh
 "#;
 
