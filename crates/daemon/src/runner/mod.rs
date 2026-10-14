@@ -965,7 +965,8 @@ impl RunnerManager {
                         });
                     }
                     Some(JobEvent::Completed { succeeded, result }) => {
-                        // Capture steps before stopping the watcher
+                        // Drain the final Worker-log bytes before persisting the step snapshot.
+                        let _ = step_watcher.poll(runner_id).await;
                         let steps = step_watcher
                             .get_steps(runner_id)
                             .await
@@ -1893,6 +1894,8 @@ impl RunnerManager {
                             }
                         }
                         Some(JobEvent::Completed { succeeded, result }) => {
+                            // Drain the final Worker-log bytes before persisting the step snapshot.
+                            let _ = step_watcher.poll(&rid).await;
                             let steps_data = step_watcher
                                 .get_steps(&rid)
                                 .await
