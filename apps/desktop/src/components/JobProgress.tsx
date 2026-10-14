@@ -8,6 +8,7 @@ export interface JobProgressProps {
   expandedStep: number | null;
   stepLogs: Record<number, string[]>;
   stepLogErrors?: Record<number, string>;
+  isBusy?: boolean;
   onToggleStep: (stepNumber: number) => void;
   height?: number;
   resizeHandle?: React.ReactNode;
@@ -65,6 +66,7 @@ export function JobProgress({
   expandedStep,
   stepLogs,
   stepLogErrors = {},
+  isBusy = true,
   onToggleStep,
   height,
   resizeHandle,
@@ -132,7 +134,7 @@ export function JobProgress({
             </span>
           )}
           <span className="runner-card-label" style={{ margin: 0, fontSize: 11 }}>
-            {jobName ? `Job: ${jobName}` : "Job Progress"}
+            {jobName ? (isBusy ? `Job: ${jobName}` : `Last job: ${jobName}`) : isBusy ? "Job Progress" : "Latest Job Steps"}
           </span>
           <span
             style={{
@@ -293,9 +295,9 @@ export function JobProgress({
                       </span>
                     ) : logs.length === 0 ? (
                       <span style={{ color: "var(--text-secondary)", fontStyle: "italic" }}>
-                        {step.status === "running"
-                          ? "Logs available after step completes."
-                          : "No log output."}
+                        {step.status === "running" || isBusy
+                          ? "Waiting for live step output… Retrying..."
+                          : "No log output was captured locally."}
                       </span>
                     ) : (
                       logs.map((line, i) => (
