@@ -1512,31 +1512,15 @@ impl RunnerManager {
             ))
         })?;
 
-        let raw_log = self
-            .step_log_cache
-            .get_or_fetch(job_id, &gh, &owner, &repo)
+        let raw_log = gh
+            .get_job_step_logs(&owner, &repo, job_id, &step_name, step_number)
             .await
             .map_err(|error| {
                 crate::runner::steps::StepLogError::Upstream(format!(
-                    "GitHub API could not fetch logs for {owner}/{repo}, job ID {job_id}: {error:#}"
+                    "GitHub API could not fetch logs for {owner}/{repo}, job ID {job_id}, step {step_number} ('{step_name}'): {error:#}"
                 ))
             })?;
-        let sections = crate::github::parse_job_log_sections(&raw_log);
-        let section = sections
-            .iter()
-            .find(|(name, _)| name == &step_name)
-            .ok_or_else(|| {
-                let available = sections
-                    .iter()
-                    .map(|(name, _)| name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                crate::runner::steps::StepLogError::NotFound(format!(
-                    "The GitHub log for job {job_id} does not contain step '{step_name}'. Available log sections: {}",
-                    if available.is_empty() { "(none)" } else { &available }
-                ))
-            })?;
-        let lines = section.1.lines().map(|line| line.to_string()).collect();
+        let lines = raw_log.lines().map(|line| line.to_string()).collect();
 
         Ok(crate::api::steps::StepLogsResponse {
             step_number,
