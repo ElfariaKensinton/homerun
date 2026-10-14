@@ -7,6 +7,7 @@ export interface JobProgressProps {
   jobName: string | null;
   expandedStep: number | null;
   stepLogs: Record<number, string[]>;
+  stepLogErrors?: Record<number, string>;
   onToggleStep: (stepNumber: number) => void;
   height?: number;
   resizeHandle?: React.ReactNode;
@@ -63,6 +64,7 @@ export function JobProgress({
   jobName,
   expandedStep,
   stepLogs,
+  stepLogErrors = {},
   onToggleStep,
   height,
   resizeHandle,
@@ -273,7 +275,17 @@ export function JobProgress({
                       color: "var(--text-secondary)",
                     }}
                   >
-                    {logs === undefined ? (
+                    {stepLogErrors[step.number] ? (
+                      <span
+                        style={{
+                          color: "var(--accent-red)",
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-word",
+                        }}
+                      >
+                        {stepLogErrors[step.number]}
+                      </span>
+                    ) : logs === undefined ? (
                       <span style={{ color: "var(--text-secondary)", fontStyle: "italic" }}>
                         Fetching logs...
                       </span>
