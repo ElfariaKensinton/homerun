@@ -556,7 +556,7 @@ mod tests {
 [2026-03-23 07:54:53Z INFO StepsRunner] Processing step: DisplayName='Checkout'\n\
 [2026-03-23 07:54:53Z INFO StepsRunner] Starting the step.\n\
 [2026-03-23 07:54:54Z INFO ProcessInvokerWrapper] checkout output line\n\
-[2026-03-23 07:54:55Z INFO StepsRunner] No need for updating job result with current step result 'Succeeded'.\\n";
+[2026-03-23 07:54:55Z INFO StepsRunner] No need for updating job result with current step result 'Succeeded'.\n";
         std::fs::write(&log_path, content).unwrap();
 
         assert_eq!(
