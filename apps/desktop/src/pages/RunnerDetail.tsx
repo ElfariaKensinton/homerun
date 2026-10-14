@@ -815,7 +815,7 @@ export function RunnerDetail() {
           )}
         </div>
 
-        {/* Job Progress — full width, only when busy */}
+        {/* Keep the latest job's steps and logs visible after it finishes. */}
         {steps.length > 0 && (
           <JobProgress
             steps={steps}
