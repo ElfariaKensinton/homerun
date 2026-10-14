@@ -107,9 +107,18 @@ export function useJobSteps(runnerId: string | undefined, isBusy: boolean): UseJ
         });
         setStepLogs((previous) => ({ ...previous, [expandedStep]: lines }));
       } catch (error) {
-        // GitHub may not publish logs until a running step completes. Preserve that
-        // expected state, but show failures for completed steps instead of hiding them.
-        if (isRunning) {
+        const message = errorMessage(error);
+        const logsNotReady = message.includes("HTTP 404") || message.includes("BlobNotFound");
+
+        // GitHub can accept the job/step request before the log blob is published.
+        // While the runner is busy, keep retrying instead of caching a transient 404
+        // as a permanent "No log output" result.
+        if (isBusy && logsNotReady) {
+          setStepLogErrors((previous) => ({
+            ...previous,
+            [expandedStep]: "GitHub has not published this step's logs yet. Retrying...",
+          }));
+        } else if (isRunning) {
           setStepLogErrors((previous) => {
             if (!(expandedStep in previous)) return previous;
             const next = { ...previous };
@@ -119,7 +128,7 @@ export function useJobSteps(runnerId: string | undefined, isBusy: boolean): UseJ
         } else {
           setStepLogErrors((previous) => ({
             ...previous,
-            [expandedStep]: errorMessage(error),
+            [expandedStep]: message,
           }));
         }
 
@@ -131,10 +140,12 @@ export function useJobSteps(runnerId: string | undefined, isBusy: boolean): UseJ
 
     fetchLogs();
 
-    if (!isRunning) return;
+    // Logs may become available only after the individual step completes, and
+    // sometimes only later in the overall job. Retry while the runner is busy.
+    if (!isBusy) return;
     const interval = setInterval(fetchLogs, 5000);
     return () => clearInterval(interval);
-  }, [expandedStep, runnerId, currentStepStatus, currentStepName]);
+  }, [expandedStep, runnerId, currentStepStatus, currentStepName, isBusy]);
 
   const toggleStep = useCallback((stepNumber: number) => {
     setExpandedStep((previous) => (previous === stepNumber ? null : stepNumber));
