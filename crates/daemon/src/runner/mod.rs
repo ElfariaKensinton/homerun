@@ -1471,6 +1471,53 @@ impl RunnerManager {
             )
         };
 
+        // Prefer local Worker diagnostics. They are written while the step runs,
+        // unlike GitHub's downloadable log blob, which often appears only later.
+        let live_lines = self
+            .step_watcher
+            .get_step_logs(runner_id, step_number)
+            .await
+            .unwrap_or_default();
+        if !live_lines.is_empty() {
+            return Ok(crate::api::steps::StepLogsResponse {
+                step_number,
+                step_name,
+                lines: live_lines,
+            });
+        }
+
+        // Worker logs remain on disk after completion, so completed step output
+        // survives stopping the watcher and restarting the daemon.
+        let disk_lines =
+            crate::runner::steps::WorkerLogWatcher::read_step_logs_from_disk(&work_dir, step_number);
+        if !disk_lines.is_empty() {
+            return Ok(crate::api::steps::StepLogsResponse {
+                step_number,
+                step_name,
+                lines: disk_lines,
+            });
+        }
+
+        // Do not turn a transient "log blob not published yet" into a 502 while
+        // the job is executing. The clients will poll this endpoint for updates.
+        if runner_busy {
+            return Ok(crate::api::steps::StepLogsResponse {
+                step_number,
+                step_name,
+                lines: Vec::new(),
+            });
+        }
+
+        // Do not turn a transient "log blob not published yet" into a 502 while
+        // the job is executing. The clients will poll this endpoint for updates.
+        if runner_busy {
+            return Ok(crate::api::steps::StepLogsResponse {
+                step_number,
+                step_name,
+                lines: Vec::new(),
+            });
+        }
+
         let job_id = if let Some(job_id) = live_job_id {
             job_id
         } else {
@@ -1514,43 +1561,6 @@ impl RunnerManager {
                 "Could not initialize the GitHub API client: {error:#}"
             ))
         })?;
-
-        // Prefer local Worker diagnostics. They are written while the step runs,
-        // unlike GitHub's downloadable log blob, which often appears only later.
-        let live_lines = self
-            .step_watcher
-            .get_step_logs(runner_id, step_number)
-            .await
-            .unwrap_or_default();
-        if !live_lines.is_empty() {
-            return Ok(crate::api::steps::StepLogsResponse {
-                step_number,
-                step_name,
-                lines: live_lines,
-            });
-        }
-
-        // Worker logs remain on disk after completion, so completed step output
-        // survives stopping the watcher and restarting the daemon.
-        let disk_lines =
-            crate::runner::steps::WorkerLogWatcher::read_step_logs_from_disk(&work_dir, step_number);
-        if !disk_lines.is_empty() {
-            return Ok(crate::api::steps::StepLogsResponse {
-                step_number,
-                step_name,
-                lines: disk_lines,
-            });
-        }
-
-        // Do not turn a transient "log blob not published yet" into a 502 while
-        // the job is executing. The clients will poll this endpoint for updates.
-        if runner_busy {
-            return Ok(crate::api::steps::StepLogsResponse {
-                step_number,
-                step_name,
-                lines: Vec::new(),
-            });
-        }
 
         // The runner's local diagnostic file may not contain action stdout for
         // every action type. Once the job has ended, use GitHub's authoritative
