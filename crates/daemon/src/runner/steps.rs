@@ -894,6 +894,27 @@ mod tests {
         assert!(WorkerLogWatcher::read_step_logs_from_disk(dir.path(), 2).is_empty());
     }
 
+    #[test]
+    fn test_read_step_output_from_dedicated_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let output_dir = dir.path().join("_diag").join("homerun-step-logs");
+        std::fs::create_dir_all(&output_dir).unwrap();
+        std::fs::write(
+            output_dir.join("step-2.log"),
+            "##[group]Run build\\ncompiler output\\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            WorkerLogWatcher::read_step_output_from_disk(dir.path(), 2),
+            vec![
+                "##[group]Run build".to_string(),
+                "compiler output".to_string()
+            ]
+        );
+        assert!(WorkerLogWatcher::read_step_output_from_disk(dir.path(), 1).is_empty());
+    }
+
     #[tokio::test]
     async fn test_watcher_filters_internal_worker_diagnostics_from_live_output() {
         let dir = tempfile::tempdir().unwrap();
