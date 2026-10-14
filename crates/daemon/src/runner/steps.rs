@@ -74,7 +74,6 @@ fn parse_worker_timestamp(s: &str) -> Option<DateTime<Utc>> {
 /// Expected patterns:
 /// - `[<ts> INFO StepsRunner] Processing step: DisplayName='<name>'` → Discovered
 /// - `[<ts> INFO StepsRunner] Starting the step.` → Started
-[2026-03-23 07:54:54Z INFO ProcessInvokerWrapper] checkout output line\n\
 /// - `[<ts> INFO StepsRunner] … current step result '<Result>'.` → Completed
 pub fn parse_step_event(line: &str) -> Option<StepEvent> {
     // Early return if not a StepsRunner line
@@ -519,6 +518,7 @@ mod tests {
         let log_content = "\
 [2026-03-23 07:54:53Z INFO StepsRunner] Processing step: DisplayName='Checkout'\n\
 [2026-03-23 07:54:53Z INFO StepsRunner] Starting the step.\n\
+[2026-03-23 07:54:54Z INFO ProcessInvokerWrapper] checkout output line\n\
 [2026-03-23 07:54:55Z INFO StepsRunner] No need for updating job result with current step result 'Succeeded'.\n\
 [2026-03-23 07:54:55Z INFO StepsRunner] Processing step: DisplayName='Build'\n\
 [2026-03-23 07:54:55Z INFO StepsRunner] Starting the step.\n";
