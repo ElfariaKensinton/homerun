@@ -824,6 +824,7 @@ export function RunnerDetail() {
             expandedStep={expandedStep}
             stepLogs={stepLogs}
             stepLogErrors={stepLogErrors}
+            isBusy={state === "busy"}
             onToggleStep={toggleStep}
             height={stepsHeight}
             resizeHandle={
