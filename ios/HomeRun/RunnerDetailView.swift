@@ -10,6 +10,7 @@ struct RunnerDetailView: View {
     @State private var history: [JobHistoryEntry] = []
     @State private var selectedStep: Int?
     @State private var stepLogs: StepLogsResponse?
+    @State private var stepLogStatusMessage: String?
     @State private var errorMessage: String?
     @State private var confirmDelete = false
     @State private var showingEditConfiguration = false
@@ -143,6 +144,7 @@ struct RunnerDetailView: View {
                     Button("OK", role: .cancel) { errorMessage = nil }
                 } message: { Text(errorMessage ?? "") }
                 .task(id: section) { await loadSection() }
+                .task(id: stepLogPollingKey) { await pollSelectedStepLogs() }
                 .refreshable {
                     await model.refresh()
                     await loadSection()
@@ -227,13 +229,16 @@ struct RunnerDetailView: View {
             ForEach(steps?.steps ?? []) { step in
                 VStack(alignment: .leading, spacing: 6) {
                     Button {
-                        Task {
-                            selectedStep = selectedStep == step.number ? nil : step.number
+                        if selectedStep == step.number {
+                            selectedStep = nil
                             stepLogs = nil
-                            if selectedStep != nil {
-                                do { stepLogs = try await model.loadStepLogs(runnerId, step: step.number) }
-                                catch { errorMessage = error.localizedDescription }
-                            }
+                            stepLogStatusMessage = nil
+                        } else {
+                            selectedStep = step.number
+                            stepLogs = nil
+                            stepLogStatusMessage = runner?.state == .busy
+                                ? "Waiting for live step output… Retrying..."
+                                : "Loading step logs…"
                         }
                     } label: {
                         HStack(alignment: .top) {
@@ -246,13 +251,27 @@ struct RunnerDetailView: View {
                                 .font(.caption)
                         }
                     }
-                    if selectedStep == step.number, let stepLogs {
-                        Text(stepLogs.lines.joined(separator: "\n"))
-                            .font(.system(.caption2, design: .monospaced))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(8)
+                    if selectedStep == step.number {
+                        if let stepLogs, !stepLogs.lines.isEmpty {
+                            ScrollView([.horizontal, .vertical]) {
+                                Text(stepLogs.lines.joined(separator: "\n"))
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(8)
+                            }
+                            .frame(maxHeight: 260)
                             .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+                        } else if let message = stepLogStatusMessage {
+                            Text(message)
+                                .font(.caption)
+                                .foregroundStyle(message.contains("HTTP") || message.contains("permission")
+                                    ? .red : .secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(8)
+                        } else {
+                            ProgressView("Loading step logs…")
+                        }
                     }
                 }
                 .padding(.vertical, 4)
@@ -373,6 +392,51 @@ struct RunnerDetailView: View {
         defer { working = false }
         do { try await model.runnerAction(runnerId, action: action) }
         catch { errorMessage = error.localizedDescription }
+    }
+
+    private var stepLogPollingKey: String {
+        "\(section)-\(selectedStep ?? -1)-\(runner?.state.rawValue ?? "unknown")"
+    }
+
+    /// Keep the selected step's output live while a job is running, then do one
+    /// final fetch after completion so the same step remains inspectable.
+    private func pollSelectedStepLogs() async {
+        guard section == "Steps", let targetStep = selectedStep else { return }
+
+        while !Task.isCancelled && section == "Steps" && selectedStep == targetStep {
+            if let refreshed = try? await model.loadSteps(runnerId) {
+                steps = refreshed
+            }
+
+            do {
+                let response = try await model.loadStepLogs(runnerId, step: targetStep)
+                stepLogs = response
+                if !response.lines.isEmpty {
+                    stepLogStatusMessage = nil
+                } else if runner?.state == .busy {
+                    stepLogStatusMessage = "Waiting for live step output… Retrying..."
+                } else {
+                    stepLogStatusMessage = "No log output was returned for this step."
+                }
+            } catch {
+                let message = error.localizedDescription
+                if runner?.state == .busy &&
+                    (message.contains("404") || message.contains("BlobNotFound")) {
+                    stepLogStatusMessage = "GitHub has not published this step's logs yet. Retrying..."
+                } else {
+                    stepLogStatusMessage = message
+                }
+            }
+
+            // A final read is enough for a completed job; busy jobs are polled
+            // repeatedly, including earlier steps whose GitHub blob is not ready.
+            guard runner?.state == .busy else { return }
+            do {
+                try await Task.sleep(nanoseconds: 2_000_000_000)
+            } catch {
+                return
+            }
+        }
     }
 
     private func loadSection() async {
