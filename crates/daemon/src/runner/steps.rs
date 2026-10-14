@@ -901,7 +901,7 @@ mod tests {
         std::fs::create_dir_all(&output_dir).unwrap();
         std::fs::write(
             output_dir.join("step-2.log"),
-            "##[group]Run build\\ncompiler output\\n",
+            "##[group]Run build\ncompiler output\n",
         )
         .unwrap();
 
