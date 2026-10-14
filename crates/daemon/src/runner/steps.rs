@@ -546,6 +546,25 @@ mod tests {
         assert!(resp.steps[1].started_at.is_some());
     }
 
+    #[test]
+    fn test_read_step_logs_from_disk_after_job_finishes() {
+        let dir = tempfile::tempdir().unwrap();
+        let diag = dir.path().join("_diag");
+        std::fs::create_dir_all(&diag).unwrap();
+        let log_path = diag.join("Worker_20260323-075453-utc.log");
+        let content = "\
+[2026-03-23 07:54:53Z INFO StepsRunner] Processing step: DisplayName='Checkout'\\n\
+[2026-03-23 07:54:53Z INFO StepsRunner] Starting the step.\\n\
+[2026-03-23 07:54:54Z INFO ProcessInvokerWrapper] checkout output line\\n\
+[2026-03-23 07:54:55Z INFO StepsRunner] No need for updating job result with current step result 'Succeeded'.\\n";
+        std::fs::write(&log_path, content).unwrap();
+
+        assert_eq!(
+            WorkerLogWatcher::read_step_logs_from_disk(dir.path(), 1),
+            vec!["checkout output line".to_string()]
+        );
+    }
+
     #[tokio::test]
     async fn test_watcher_incremental_reads() {
         let dir = tempfile::tempdir().unwrap();
