@@ -8,6 +8,7 @@ export interface RunnerConfig {
   name: string;
   repo_owner: string;
   repo_name: string;
+  scope?: "repository" | "organization";
   labels: string[];
   mode: string;
   work_dir: string;
@@ -188,6 +189,10 @@ export interface RepoInfo {
 
 export interface CreateRunnerRequest {
   repo_full_name: string;
+  scope?: "repository" | "organization";
+  organization?: string;
+  /** One-time registration token copied from GitHub's organization runner setup page. */
+  manual_registration_token?: string;
   name?: string;
   labels?: string[];
   mode?: string;
@@ -203,6 +208,8 @@ export interface RunnerEvent {
 
 export interface CreateBatchRequest {
   repo_full_name: string;
+  scope?: "repository" | "organization";
+  organization?: string;
   count: number;
   labels?: string[];
   mode?: string;

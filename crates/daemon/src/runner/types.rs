@@ -22,12 +22,27 @@ pub struct ContainerConfig {
     pub extra_env: Vec<(String, String)>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RunnerScope {
+    Repository,
+    Organization,
+}
+
+impl Default for RunnerScope {
+    fn default() -> Self {
+        Self::Repository
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunnerConfig {
     pub id: String,
     pub name: String,
     pub repo_owner: String,
     pub repo_name: String,
+    #[serde(default)]
+    pub scope: RunnerScope,
     pub labels: Vec<String>,
     pub mode: RunnerMode,
     pub work_dir: std::path::PathBuf,
@@ -122,7 +137,15 @@ pub struct RunnerInfo {
 
 #[derive(Debug, Deserialize)]
 pub struct CreateRunnerRequest {
+    #[serde(default)]
     pub repo_full_name: String,
+    #[serde(default)]
+    pub organization: Option<String>,
+    #[serde(default)]
+    pub scope: RunnerScope,
+    /// One-time organization registration token pasted by the user; never persisted.
+    #[serde(default)]
+    pub manual_registration_token: Option<String>,
     pub name: Option<String>,
     pub labels: Option<Vec<String>>,
     pub mode: Option<RunnerMode>,
@@ -138,7 +161,12 @@ pub struct UpdateRunnerRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct CreateBatchRequest {
+    #[serde(default)]
     pub repo_full_name: String,
+    #[serde(default)]
+    pub organization: Option<String>,
+    #[serde(default)]
+    pub scope: RunnerScope,
     pub count: u8,
     pub labels: Option<Vec<String>>,
     pub mode: Option<RunnerMode>,
@@ -214,6 +242,7 @@ mod tests {
             name: "test".to_string(),
             repo_owner: "owner".to_string(),
             repo_name: "repo".to_string(),
+            scope: RunnerScope::Repository,
             labels: vec![],
             mode: RunnerMode::App,
             work_dir: std::path::PathBuf::from("/tmp"),
@@ -238,6 +267,7 @@ mod tests {
             name: "test".to_string(),
             repo_owner: "owner".to_string(),
             repo_name: "repo".to_string(),
+            scope: RunnerScope::Repository,
             labels: vec![],
             mode: RunnerMode::Container,
             work_dir: std::path::PathBuf::from("/tmp"),

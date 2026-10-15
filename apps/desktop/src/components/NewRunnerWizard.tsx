@@ -14,6 +14,7 @@ import type {
 const DEFAULT_CONTAINER_IMAGE = "ghcr.io/agallea/homerun-runner:ubuntu-24.04";
 const RUST_CONTAINER_IMAGE = "ghcr.io/agallea/homerun-runner:rust";
 type RunnerModeChoice = "app" | "service" | "container";
+type RunnerScopeChoice = "repository" | "organization";
 type ContainerPreset = "base" | "rust" | "custom";
 
 interface NewRunnerWizardProps {
@@ -25,7 +26,7 @@ interface NewRunnerWizardProps {
 
 // Empty default — the daemon sets platform-appropriate labels (e.g. self-hosted, Windows, X64)
 const DEFAULT_LABELS: string[] = [];
-const STEPS = ["Select Repository", "Configure", "Launch"];
+const STEPS = ["Select Target", "Configure", "Launch"];
 
 function generateName(repoName: string): string {
   const slug = repoName.toLowerCase().replace(/[^a-z0-9]/g, "-");
@@ -47,11 +48,22 @@ export function NewRunnerWizard({
 }: NewRunnerWizardProps) {
   const { repos, loading: reposLoading } = useRepos();
   const [step, setStep] = useState<0 | 1 | 2>(preselectedRepo ? 1 : 0);
+  const [runnerScope, setRunnerScope] = useState<RunnerScopeChoice>("repository");
+  const [organization, setOrganization] = useState("");
+  const [manualRegistrationToken, setManualRegistrationToken] = useState("");
   const [search, setSearch] = useState("");
+  const organizations = useMemo(
+    () =>
+      Array.from(new Set(repos.filter((repo) => repo.is_org).map((repo) => repo.owner).filter(Boolean))).sort(
+        (a, b) => a.localeCompare(b),
+      ),
+    [repos],
+  );
   const [selectedRepo, setSelectedRepo] = useState<RepoInfo | null>(() => {
     return null; // will be resolved once repos load if preselectedRepo is set
   });
   const [resolvedPreselect, setResolvedPreselect] = useState(false);
+  const targetLabel = runnerScope === "organization" ? organization.trim() : selectedRepo?.full_name ?? "";
 
   // Resolve preselected repo once repos load
   useMemo(() => {
@@ -113,6 +125,8 @@ export function NewRunnerWizard({
   }, [repos, search]);
 
   function handleSelectRepo(repo: RepoInfo) {
+    setRunnerScope("repository");
+    setOrganization("");
     setSelectedRepo(repo);
     setName(generateName(repo.name));
     setStep(1);
@@ -128,7 +142,14 @@ export function NewRunnerWizard({
   }
 
   async function handleLaunch() {
-    if (!selectedRepo) return;
+    if (runnerScope === "repository" && !selectedRepo) return;
+    if (runnerScope === "organization" && (!organization.trim() || !manualRegistrationToken.trim())) return;
+    const target = runnerScope === "organization" ? organization.trim() : selectedRepo!.full_name;
+    const targetRequest = {
+      repo_full_name: runnerScope === "repository" ? target : "",
+      scope: runnerScope,
+      organization: runnerScope === "organization" ? target : undefined,
+    };
     setLaunching(true);
     setLaunchError(null);
     const labels = labelsInput
@@ -141,12 +162,14 @@ export function NewRunnerWizard({
     if (count === 1) {
       try {
         await onCreate({
-          repo_full_name: selectedRepo.full_name,
+          ...targetRequest,
           name: name.trim() || undefined,
           labels,
           mode,
           container,
+          manual_registration_token: runnerScope === "organization" ? manualRegistrationToken.trim() : undefined,
         });
+        setManualRegistrationToken("");
         setLaunched(true);
       } catch (e) {
         setLaunchError(String(e));
@@ -157,7 +180,7 @@ export function NewRunnerWizard({
       // Batch creation via server endpoint
       try {
         const result = await onCreateBatch({
-          repo_full_name: selectedRepo.full_name,
+          ...targetRequest,
           count,
           labels,
           mode,
@@ -190,7 +213,9 @@ export function NewRunnerWizard({
     .filter(Boolean);
 
   const isNextDisabled =
-    (count === 1 ? !name.trim() : false) || (mode === "container" && !containerImage.trim());
+    (count === 1 ? !name.trim() : false) ||
+    (mode === "container" && !containerImage.trim()) ||
+    (runnerScope === "organization" && !manualRegistrationToken.trim());
 
   return (
     <div className="dialog-overlay" onClick={onClose}>
@@ -215,14 +240,29 @@ export function NewRunnerWizard({
           {step === 0 && (
             <StepSelectRepo
               repos={filteredRepos}
-              loading={reposLoading}
+              loading={runnerScope === "repository" && reposLoading}
               search={search}
               onSearch={setSearch}
               selected={selectedRepo}
               onSelect={handleSelectRepo}
+              scope={runnerScope}
+              onScopeChange={(nextScope) => {
+                setRunnerScope(nextScope);
+                if (nextScope === "organization") {
+                  setSelectedRepo(null);
+                  setCount(1);
+                  if (mode === "container") setMode("app");
+                } else {
+                  setOrganization("");
+                  setManualRegistrationToken("");
+                }
+              }}
+              organization={organization}
+              onOrganizationChange={setOrganization}
+              organizations={organizations}
             />
           )}
-          {step === 1 && !selectedRepo && (
+          {step === 1 && runnerScope === "repository" && !selectedRepo && (
             <div
               style={{
                 display: "flex",
@@ -248,9 +288,12 @@ export function NewRunnerWizard({
               Loading repository...
             </div>
           )}
-          {step === 1 && selectedRepo && (
+          {step === 1 && (runnerScope === "organization" || selectedRepo) && (
             <StepConfigure
-              repo={selectedRepo}
+              targetLabel={targetLabel}
+              scope={runnerScope}
+              manualRegistrationToken={manualRegistrationToken}
+              onManualRegistrationToken={setManualRegistrationToken}
               name={name}
               onName={setName}
               labelsInput={labelsInput}
@@ -266,9 +309,10 @@ export function NewRunnerWizard({
               onCount={setCount}
             />
           )}
-          {step === 2 && selectedRepo && !launched && (
+          {step === 2 && (runnerScope === "organization" || selectedRepo) && !launched && (
             <StepLaunch
-              repo={selectedRepo}
+              targetLabel={targetLabel}
+              scope={runnerScope}
               name={name}
               labels={labels}
               mode={mode}
@@ -291,12 +335,12 @@ export function NewRunnerWizard({
               <h3 style={{ margin: "0 0 8px", color: "var(--text-primary)" }}>Runner launched!</h3>
               <p className="text-muted">
                 <strong className="text-primary">{name}</strong> is being created for{" "}
-                <strong className="text-primary">{selectedRepo?.full_name}</strong>.
+                <strong className="text-primary">{targetLabel}</strong> ({runnerScope === "organization" ? "organization" : "repository"}).
               </p>
             </div>
           )}
           {step === 2 && launched && count > 1 && (
-            <BatchSummary results={batchResults} repo={selectedRepo!} />
+            <BatchSummary results={batchResults} targetLabel={targetLabel} />
           )}
         </div>
 
@@ -315,8 +359,14 @@ export function NewRunnerWizard({
             {step === 0 && (
               <button
                 className="btn btn-primary"
-                disabled={!selectedRepo}
-                onClick={() => setStep(1)}
+                disabled={runnerScope === "repository" ? !selectedRepo : !organization.trim()}
+                onClick={() => {
+                  if (runnerScope === "organization") {
+                    setSelectedRepo(null);
+                    setName(generateName(organization.trim()));
+                  }
+                  setStep(1);
+                }}
               >
                 Next
               </button>
@@ -324,7 +374,7 @@ export function NewRunnerWizard({
             {step === 1 && (
               <button
                 className="btn btn-primary"
-                disabled={isNextDisabled || !selectedRepo}
+                disabled={isNextDisabled || (runnerScope === "repository" && !selectedRepo)}
                 onClick={handleNext}
               >
                 Next
@@ -362,6 +412,11 @@ interface StepSelectRepoProps {
   onSearch: (v: string) => void;
   selected: RepoInfo | null;
   onSelect: (r: RepoInfo) => void;
+  scope: RunnerScopeChoice;
+  onScopeChange: (scope: RunnerScopeChoice) => void;
+  organization: string;
+  onOrganizationChange: (value: string) => void;
+  organizations: string[];
 }
 
 function StepSelectRepo({
@@ -371,9 +426,66 @@ function StepSelectRepo({
   onSearch,
   selected,
   onSelect,
+  scope,
+  onScopeChange,
+  organization,
+  onOrganizationChange,
+  organizations,
 }: StepSelectRepoProps) {
   return (
     <div>
+      <div className="form-group">
+        <label className="form-label">Runner scope</label>
+        <div style={{ display: "flex", gap: 8 }}>
+          {(["repository", "organization"] as const).map((value) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => onScopeChange(value)}
+              aria-pressed={scope === value}
+              style={{
+                flex: 1,
+                padding: "9px 12px",
+                borderRadius: 8,
+                border: `1px solid ${scope === value ? "var(--accent-blue)" : "var(--border)"}`,
+                background: scope === value ? "rgba(59, 130, 246, 0.12)" : "var(--bg-tertiary)",
+                color: scope === value ? "var(--accent-blue)" : "var(--text-primary)",
+                cursor: "pointer",
+                fontWeight: scope === value ? 600 : 400,
+              }}
+            >
+              {value === "repository" ? "Repository" : "Organization"}
+            </button>
+          ))}
+        </div>
+        <p className="form-hint">
+          {scope === "organization"
+            ? "An organization runner can accept jobs from any repository in that GitHub organization."
+            : "A repository runner only accepts jobs from the selected repository."}
+        </p>
+      </div>
+      {scope === "organization" ? (
+        <div className="form-group">
+          <label className="form-label" htmlFor="runner-organization">
+            Organization login
+          </label>
+          <input
+            id="runner-organization"
+            type="text"
+            list="runner-organization-options"
+            value={organization}
+            onChange={(e) => onOrganizationChange(e.target.value)}
+            placeholder="Organization login (e.g. acme)"
+            autoComplete="off"
+            style={{ width: "100%" }}
+          />
+          <datalist id="runner-organization-options">
+            {organizations.map((login) => <option key={login} value={login} />)}
+          </datalist>
+          <p className="form-hint">Use the organization login from GitHub, not a repository name or URL.</p>
+        </div>
+      ) : (
+        <>
       <div className="form-group">
         <input
           type="text"
@@ -414,12 +526,17 @@ function StepSelectRepo({
           ))}
         </div>
       )}
+        </>
+      )}
     </div>
   );
 }
 
 interface StepConfigureProps {
-  repo: RepoInfo;
+  targetLabel: string;
+  scope: RunnerScopeChoice;
+  manualRegistrationToken: string;
+  onManualRegistrationToken: (v: string) => void;
   name: string;
   onName: (v: string) => void;
   labelsInput: string;
@@ -436,7 +553,10 @@ interface StepConfigureProps {
 }
 
 function StepConfigure({
-  repo,
+  targetLabel,
+  scope,
+  manualRegistrationToken,
+  onManualRegistrationToken,
   name,
   onName,
   labelsInput,
@@ -454,10 +574,29 @@ function StepConfigure({
   return (
     <div>
       <div className="form-group">
-        <label className="form-label">Repository</label>
-        <div style={{ fontSize: 13, color: "var(--text-secondary)" }}>{repo.full_name}</div>
+        <label className="form-label">{scope === "organization" ? "Organization" : "Repository"}</label>
+        <div style={{ fontSize: 13, color: "var(--text-secondary)" }}>{targetLabel}</div>
       </div>
 
+      {scope === "organization" && (
+        <div className="form-group">
+          <label className="form-label" htmlFor="organization-registration-token">GitHub registration token</label>
+          <input
+            id="organization-registration-token"
+            type="password"
+            autoComplete="off"
+            value={manualRegistrationToken}
+            onChange={(e) => onManualRegistrationToken(e.target.value)}
+            placeholder="Paste organization registration token"
+            style={{ width: "100%" }}
+          />
+          <p className="form-hint">
+            Copy the token from GitHub Organization Settings → Actions → Runners → New self-hosted runner.
+            It is used for initial setup only and is not saved by HomeRun. One runner is created per token.
+          </p>
+        </div>
+      )}
+      {scope === "repository" ? (
       <div className="form-group">
         <label className="form-label">Runners</label>
         <div style={{ display: "flex", gap: 4 }}>
@@ -492,12 +631,15 @@ function StepConfigure({
         </p>
       </div>
 
+      ) : (
+        <p className="form-hint">Organization registration tokens are single-use. Create one runner per token.</p>
+      )}
       <div className="form-group">
         <label className="form-label">Mode</label>
         <div style={{ display: "flex", gap: 10 }}>
           {(["app", "service", "container"] as const).map((m) => {
             const selected = mode === m;
-            const disabled = m === "container" && dockerAvailable === false;
+            const disabled = m === "container" && (dockerAvailable === false || scope === "organization");
             const iconColor = disabled
               ? "var(--text-secondary)"
               : selected
@@ -510,7 +652,9 @@ function StepConfigure({
                 disabled={disabled}
                 title={
                   disabled
-                    ? "Docker isn't reachable — start Docker Desktop to use this mode"
+                    ? scope === "organization"
+                      ? "Organization runners with manual tokens support App and Service modes only"
+                      : "Docker isn't reachable — start Docker Desktop to use this mode"
                     : undefined
                 }
                 style={{
@@ -700,7 +844,8 @@ function StepConfigure({
 }
 
 interface StepLaunchProps {
-  repo: RepoInfo;
+  targetLabel: string;
+  scope: RunnerScopeChoice;
   name: string;
   labels: string[];
   mode: string;
@@ -709,8 +854,8 @@ interface StepLaunchProps {
   error: string | null;
 }
 
-function StepLaunch({ repo, name, labels, mode, containerImage, count, error }: StepLaunchProps) {
-  const slug = repo.name.toLowerCase().replace(/[^a-z0-9]/g, "-");
+function StepLaunch({ targetLabel, scope, name, labels, mode, containerImage, count, error }: StepLaunchProps) {
+  const slug = (targetLabel.split("/").pop() ?? "runner").toLowerCase().replace(/[^a-z0-9]/g, "-");
 
   return (
     <div>
@@ -722,8 +867,8 @@ function StepLaunch({ repo, name, labels, mode, containerImage, count, error }: 
 
       <div className="launch-summary">
         <div className="launch-summary-row">
-          <span className="launch-summary-key">Repository</span>
-          <span className="launch-summary-value">{repo.full_name}</span>
+          <span className="launch-summary-key">{scope === "organization" ? "Organization" : "Repository"}</span>
+          <span className="launch-summary-value">{targetLabel}</span>
         </div>
         <div className="launch-summary-row">
           <span className="launch-summary-key">Name</span>
@@ -758,10 +903,10 @@ function StepLaunch({ repo, name, labels, mode, containerImage, count, error }: 
 
 interface BatchSummaryProps {
   results: BatchResult[];
-  repo: RepoInfo;
+  targetLabel: string;
 }
 
-function BatchSummary({ results, repo }: BatchSummaryProps) {
+function BatchSummary({ results, targetLabel }: BatchSummaryProps) {
   const successCount = results.filter((r) => r.success).length;
   const failCount = results.length - successCount;
   const allSuccess = failCount === 0;
@@ -784,7 +929,7 @@ function BatchSummary({ results, repo }: BatchSummaryProps) {
             : `${successCount} of ${results.length} runners created`}
         </h3>
         <p className="text-muted">
-          For <strong className="text-primary">{repo.full_name}</strong>
+          For <strong className="text-primary">{targetLabel}</strong>
         </p>
       </div>
 

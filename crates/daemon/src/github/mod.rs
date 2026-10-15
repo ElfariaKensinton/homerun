@@ -350,6 +350,194 @@ impl GitHubClient {
         Ok(None)
     }
 
+    /// Find an active job for an organization-level runner across all repositories.
+    pub async fn get_active_run_for_org_runner(
+        &self,
+        organization: &str,
+        runner_name: &str,
+        job_name: &str,
+    ) -> Result<Option<crate::runner::types::JobContext>> {
+        self.find_org_runner_job(organization, runner_name, job_name, true).await
+    }
+
+    /// Find the most recent job for an organization-level runner across all repositories.
+    pub async fn get_recent_run_for_org_runner(
+        &self,
+        organization: &str,
+        runner_name: &str,
+        job_name: &str,
+    ) -> Result<Option<crate::runner::types::JobContext>> {
+        self.find_org_runner_job(organization, runner_name, job_name, false).await
+    }
+
+    async fn find_org_runner_job(
+        &self,
+        organization: &str,
+        runner_name: &str,
+        job_name: &str,
+        active_only: bool,
+    ) -> Result<Option<crate::runner::types::JobContext>> {
+        #[derive(Deserialize)]
+        struct OrgRepo {
+            name: String,
+        }
+        #[derive(Deserialize)]
+        struct PullRequestRef {
+            number: u64,
+            url: String,
+        }
+        #[derive(Deserialize)]
+        struct WorkflowRun {
+            id: u64,
+            head_branch: String,
+            html_url: String,
+            #[serde(default)]
+            updated_at: Option<String>,
+            #[serde(default)]
+            pull_requests: Vec<PullRequestRef>,
+        }
+        #[derive(Deserialize)]
+        struct RunsResponse {
+            #[serde(default)]
+            workflow_runs: Vec<WorkflowRun>,
+        }
+        #[derive(Deserialize)]
+        struct RunJob {
+            id: u64,
+            name: String,
+            runner_name: Option<String>,
+        }
+        #[derive(Deserialize)]
+        struct JobsResponse {
+            #[serde(default)]
+            jobs: Vec<RunJob>,
+        }
+
+        if organization.trim().is_empty() || organization.contains('/') {
+            bail!("Invalid organization login");
+        }
+
+        // GitHub exposes workflow runs per repository, not through an
+        // /orgs/{org}/actions/runs endpoint. Enumerate repositories, then inspect
+        // their recent runs to resolve which repository an organization runner used.
+        let mut repository_page = 1_u32;
+        let mut runner_matches: Vec<(Option<String>, crate::runner::types::JobContext)> =
+            Vec::new();
+        let mut name_matches: Vec<(Option<String>, crate::runner::types::JobContext)> =
+            Vec::new();
+
+        loop {
+            let repositories_route = format!(
+                "/orgs/{organization}/repos?type=all&sort=updated&direction=desc&per_page=100&page={repository_page}"
+            );
+            let repositories: Vec<OrgRepo> =
+                match self.octocrab.get(&repositories_route, None::<&()>).await {
+                    Ok(repositories) => repositories,
+                    Err(error) => {
+                        tracing::debug!(
+                            organization,
+                            repository_page,
+                            error = %error,
+                            "Could not list organization repositories for runner job lookup"
+                        );
+                        break;
+                    }
+                };
+
+            if repositories.is_empty() {
+                break;
+            }
+
+            for repository in &repositories {
+                let status_filter = if active_only {
+                    "&status=in_progress"
+                } else {
+                    ""
+                };
+                let runs_route = format!(
+                    "/repos/{organization}/{}/actions/runs?per_page=20{status_filter}",
+                    repository.name
+                );
+                let runs: RunsResponse =
+                    match self.octocrab.get(&runs_route, None::<&()>).await {
+                        Ok(runs) => runs,
+                        Err(error) => {
+                            tracing::trace!(
+                                organization,
+                                repository = %repository.name,
+                                error = %error,
+                                "Could not list repository workflow runs for organization runner lookup"
+                            );
+                            continue;
+                        }
+                    };
+
+                for run in runs.workflow_runs {
+                    let jobs_route = format!(
+                        "/repos/{organization}/{}/actions/runs/{}/jobs?per_page=100",
+                        repository.name, run.id
+                    );
+                    let jobs: JobsResponse =
+                        match self.octocrab.get(&jobs_route, None::<&()>).await {
+                            Ok(jobs) => jobs,
+                            Err(_) => continue,
+                        };
+
+                    let (pr_number, pr_url) = if let Some(pr) = run.pull_requests.first() {
+                        (
+                            Some(pr.number),
+                            Some(pr.url
+                                .replace("api.github.com/repos", "github.com")
+                                .replace("/pulls/", "/pull/")),
+                        )
+                    } else {
+                        (None, None)
+                    };
+
+                    for job in jobs.jobs {
+                        let context = crate::runner::types::JobContext {
+                            branch: run.head_branch.clone(),
+                            pr_number,
+                            pr_url: pr_url.clone(),
+                            run_url: run.html_url.clone(),
+                            job_id: Some(job.id),
+                        };
+
+                        if job.runner_name.as_deref() == Some(runner_name) {
+                            // An active runner can only be executing one job at a time.
+                            if active_only {
+                                return Ok(Some(context));
+                            }
+                            runner_matches.push((run.updated_at.clone(), context));
+                        } else if job.runner_name.is_none() && job.name == job_name {
+                            // Runner names are occasionally omitted by the API. Only
+                            // accept job-name fallback when it is unambiguous org-wide.
+                            name_matches.push((run.updated_at.clone(), context));
+                        }
+                    }
+                }
+            }
+
+            if repositories.len() < 100 {
+                break;
+            }
+            repository_page += 1;
+        }
+
+        if !runner_matches.is_empty() {
+            // The same organization runner appears in older completed jobs. Prefer
+            // the most recently updated workflow run across all repositories.
+            runner_matches.sort_by(|left, right| right.0.cmp(&left.0));
+            return Ok(runner_matches.into_iter().next().map(|(_, context)| context));
+        }
+
+        if name_matches.len() == 1 {
+            Ok(name_matches.pop().map(|(_, context)| context))
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Check the status of a workflow run. Returns (status, conclusion).
     /// Status: "queued", "in_progress", "completed", etc.
     /// Conclusion (only when completed): "success", "failure", "cancelled", etc.
@@ -607,6 +795,20 @@ impl GitHubClient {
         let body = response.text().await?;
         Ok(extract_annotation_message(&body))
     }
+}
+
+/// Parse a GitHub Actions run URL and return its repository owner/name.
+pub fn repository_from_run_url(run_url: &str) -> Option<(String, String)> {
+    let url = reqwest::Url::parse(run_url).ok()?;
+    let segments = url.path_segments()?.filter(|segment| !segment.is_empty()).collect::<Vec<_>>();
+    let actions_index = segments.iter().position(|segment| *segment == "actions")?;
+    if actions_index < 2 {
+        return None;
+    }
+    Some((
+        segments[actions_index - 2].to_string(),
+        segments[actions_index - 1].to_string(),
+    ))
 }
 
 /// Extract the first annotation message from a GitHub check-run annotations JSON response.

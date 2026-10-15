@@ -5,7 +5,7 @@ use axum::{
 };
 use serde::Deserialize;
 
-use crate::runner::types::{CreateRunnerRequest, RunnerInfo, UpdateRunnerRequest};
+use crate::runner::types::{CreateRunnerRequest, RunnerInfo, RunnerScope, UpdateRunnerRequest};
 use crate::server::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -17,10 +17,46 @@ pub async fn create_runner(
     State(state): State<AppState>,
     Json(req): Json<CreateRunnerRequest>,
 ) -> Result<(StatusCode, Json<RunnerInfo>), (StatusCode, String)> {
+    let manual_registration_token = req
+        .manual_registration_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(str::to_owned);
+
+    let target = match req.scope {
+        RunnerScope::Repository => {
+            if req.repo_full_name.trim().is_empty() {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "repo_full_name is required for repository runners".to_string(),
+                ));
+            }
+            req.repo_full_name.clone()
+        }
+        RunnerScope::Organization => {
+            if manual_registration_token.is_none() {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "Organization runners require a registration token pasted from GitHub: Organization Settings → Actions → Runners → New self-hosted runner.".to_string(),
+                ));
+            }
+            req.organization
+                .clone()
+                .or_else(|| (!req.repo_full_name.trim().is_empty()).then(|| req.repo_full_name.clone()))
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| (
+                    StatusCode::BAD_REQUEST,
+                    "organization is required for organization runners".to_string(),
+                ))?
+        }
+    };
+
     let runner = state
         .runner_manager
-        .create(
-            &req.repo_full_name,
+        .create_scoped(
+            &target,
+            req.scope,
             req.name,
             req.labels,
             req.mode,
@@ -30,18 +66,20 @@ pub async fn create_runner(
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
 
-    // Spawn background task to register and start the runner
-    let token = state.auth.token().await.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            "No auth token available. Please authenticate first.".to_string(),
-        )
-    })?;
+    // The GitHub token below is for HomeRun's API identity. A new organization
+    // runner is registered with the one-time token the user pasted from GitHub.
+    let token = state.auth.token().await.ok_or_else(|| (
+        StatusCode::UNAUTHORIZED,
+        "No auth token available. Please authenticate first.".to_string(),
+    ))?;
 
     let manager = state.runner_manager.clone();
     let runner_id = runner.config.id.clone();
     tokio::spawn(async move {
-        if let Err(e) = manager.register_and_start(&runner_id, &token).await {
+        if let Err(e) = manager
+            .register_and_start_with_manual_token(&runner_id, &token, manual_registration_token)
+            .await
+        {
             tracing::error!("Failed to register and start runner {}: {}", runner_id, e);
             let _ = manager
                 .update_state_with_error(

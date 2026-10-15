@@ -63,13 +63,16 @@ struct RunnerConfig: Codable {
     var name: String
     var repoOwner: String
     var repoName: String
+    var scope: String?
     var labels: [String]
     var mode: String
     var workDir: String
     var groupId: String?
     var container: ContainerConfig?
 
-    var repository: String { "\(repoOwner)/\(repoName)" }
+    var repository: String {
+        scope == "organization" ? "\(repoOwner) (organization)" : "\(repoOwner)/\(repoName)"
+    }
 }
 
 struct JobContext: Codable {
@@ -271,6 +274,9 @@ struct UpdateRunnerRequest: Encodable {
 
 struct CreateRunnerRequest: Encodable {
     var repoFullName: String
+    var scope: String = "repository"
+    var organization: String?
+    var manualRegistrationToken: String?
     var name: String?
     var labels: [String]?
     var mode: String?
@@ -279,6 +285,8 @@ struct CreateRunnerRequest: Encodable {
 
 struct CreateBatchRequest: Encodable {
     var repoFullName: String
+    var scope: String = "repository"
+    var organization: String?
     var count: Int
     var labels: [String]?
     var mode: String?

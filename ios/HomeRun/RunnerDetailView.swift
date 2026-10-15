@@ -159,7 +159,7 @@ struct RunnerDetailView: View {
     @ViewBuilder
     private func overviewSection(_ runner: RunnerInfo) -> some View {
         Section("Configuration") {
-            LabeledContent("Repository", value: runner.config.repository)
+            LabeledContent(runner.config.scope == "organization" ? "Organization" : "Repository", value: runner.config.repository)
             LabeledContent("Mode", value: runner.config.mode.capitalized)
             LabeledContent("Working directory", value: runner.config.workDir)
             LabeledContent("Uptime", value: formatDuration(runner.uptimeSecs))
@@ -503,7 +503,7 @@ private struct EditRunnerConfigurationSheet: View {
             Form {
                 Section("Runner") {
                     LabeledContent("Name", value: runner.config.name)
-                    LabeledContent("Repository", value: runner.config.repository)
+                    LabeledContent(runner.config.scope == "organization" ? "Organization" : "Repository", value: runner.config.repository)
                     LabeledContent("Working directory", value: runner.config.workDir)
                 }
                 Section("Editable configuration") {

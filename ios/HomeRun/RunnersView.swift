@@ -172,6 +172,9 @@ struct CreateRunnerSheet: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
     @State private var repository = ""
+    @State private var scope = "repository"
+    @State private var organization = ""
+    @State private var manualRegistrationToken = ""
     @State private var runnerName = ""
     @State private var labels = "self-hosted"
     @State private var mode = "app"
@@ -182,16 +185,64 @@ struct CreateRunnerSheet: View {
     @State private var errorMessage: String?
     @State private var resultMessage: String?
 
+    private var normalizedOrganization: String {
+        organization.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var targetLabel: String {
+        scope == "organization" ? normalizedOrganization : repository
+    }
+
     private var suggestedRunnerName: String {
-        let repoName = repository.split(separator: "/").last.map(String.init) ?? "repo"
-        return "\(repoName)-runner-1"
+        let name = targetLabel.split(separator: "/").last.map(String.init) ?? "runner"
+        return "\(name)-runner-1"
+    }
+
+    private var normalizedManualRegistrationToken: String {
+        manualRegistrationToken.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var targetIsValid: Bool {
+        if scope == "organization" {
+            return !normalizedOrganization.isEmpty
+                && !normalizedOrganization.contains("/")
+                && !normalizedManualRegistrationToken.isEmpty
+        }
+        return !repository.isEmpty
     }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Repository") {
-                    if model.repositories.isEmpty {
+                Section("Runner target") {
+                    Picker("Scope", selection: $scope) {
+                        Text("Repository").tag("repository")
+                        Text("Organization").tag("organization")
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: scope) { _, newScope in
+                        if newScope == "organization" {
+                            count = 1
+                            if mode == "container" { mode = "app" }
+                        } else {
+                            manualRegistrationToken = ""
+                        }
+                    }
+
+                    if scope == "organization" {
+                        TextField("Organization login", text: $organization)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        Text("This runner can accept jobs from repositories across the organization.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        SecureField("GitHub registration token", text: $manualRegistrationToken)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        Text("Copy the token from GitHub Organization Settings → Actions → Runners → New self-hosted runner. It is used once for initial setup and is not saved by HomeRun.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    } else if model.repositories.isEmpty {
                         if let repositoryLoadError = model.repositoryLoadError {
                             VStack(alignment: .leading, spacing: 8) {
                                 Label("Could not load GitHub repositories", systemImage: "exclamationmark.triangle")
@@ -243,7 +294,9 @@ struct CreateRunnerSheet: View {
                     Picker("Mode", selection: $mode) {
                         Text("App-managed").tag("app")
                         Text("Background service").tag("service")
-                        Text("Docker container").tag("container")
+                        if scope != "organization" {
+                            Text("Docker container").tag("container")
+                        }
                     }
                     .pickerStyle(.segmented)
                     if mode == "container" {
@@ -263,10 +316,16 @@ struct CreateRunnerSheet: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    Stepper("Runner count: \(count)", value: $count, in: 1...10)
-                    Text(count == 1 ? "Creates one runner." : "Creates a runner group of \(count) runners.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                    if scope == "repository" {
+                        Stepper("Runner count: \(count)", value: $count, in: 1...10)
+                        Text(count == 1 ? "Creates one runner." : "Creates a runner group of \(count) runners.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Organization runners are created one at a time because each registration token is single-use.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 if let resultMessage {
@@ -288,7 +347,7 @@ struct CreateRunnerSheet: View {
                             Spacer()
                         }
                     }
-                    .disabled(creating || repository.isEmpty || (mode == "container" && (containerImage.isEmpty || model.dockerStatus?.available != true)))
+                    .disabled(creating || !targetIsValid || (mode == "container" && (containerImage.isEmpty || model.dockerStatus?.available != true)))
                 }
             }
             .navigationTitle("New runner")
@@ -324,17 +383,23 @@ struct CreateRunnerSheet: View {
         do {
             if count == 1 {
                 let request = CreateRunnerRequest(
-                    repoFullName: repository,
+                    repoFullName: scope == "organization" ? "" : repository,
+                    scope: scope,
+                    organization: scope == "organization" ? normalizedOrganization : nil,
+                    manualRegistrationToken: scope == "organization" ? normalizedManualRegistrationToken : nil,
                     name: runnerName.isEmpty ? nil : runnerName,
                     labels: parsedLabels,
                     mode: mode,
                     container: container
                 )
                 let runner = try await model.createRunner(request)
-                resultMessage = "Created \(runner.config.name). Registration is running in the background."
+                manualRegistrationToken = ""
+                resultMessage = "Created \(runner.config.name) for \(targetLabel). Registration is running in the background."
             } else {
                 let request = CreateBatchRequest(
-                    repoFullName: repository,
+                    repoFullName: scope == "organization" ? "" : repository,
+                    scope: scope,
+                    organization: scope == "organization" ? normalizedOrganization : nil,
                     count: count,
                     labels: parsedLabels,
                     mode: mode,
@@ -342,7 +407,7 @@ struct CreateRunnerSheet: View {
                 )
                 let batch = try await model.createBatch(request)
                 let failures = batch.errors.map { "Runner \($0.index): \($0.error)" }
-                resultMessage = "Group \(batch.groupId): \(batch.runners.count) created, \(batch.errors.count) errors." + (failures.isEmpty ? "" : "\n" + failures.joined(separator: "\n"))
+                resultMessage = "Group \(batch.groupId) for \(targetLabel): \(batch.runners.count) created, \(batch.errors.count) errors." + (failures.isEmpty ? "" : "\n" + failures.joined(separator: "\n"))
             }
         } catch {
             errorMessage = error.localizedDescription

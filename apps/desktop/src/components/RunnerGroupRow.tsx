@@ -36,7 +36,11 @@ export function RunnerGroupRow({
   const menuRef = useRef<HTMLDivElement>(null);
 
   const namePrefix = runners[0]?.config.name.replace(/-\d+$/, "") ?? "group";
-  const repo = runners[0] ? `${runners[0].config.repo_owner}/${runners[0].config.repo_name}` : "";
+  const repo = runners[0]
+    ? runners[0].config.scope === "organization"
+      ? `${runners[0].config.repo_owner} (organization)`
+      : `${runners[0].config.repo_owner}/${runners[0].config.repo_name}`
+    : "";
   const allGroupIds = groupIds ?? [groupId];
   const forEachGroup = (fn: (gid: string) => void) => allGroupIds.forEach(fn);
 

@@ -17,7 +17,7 @@ use crate::runner::process::{
 };
 use crate::runner::state::RunnerState;
 use crate::runner::steps::{StepsResponse, WorkerLogWatcher};
-use crate::runner::types::{RunnerConfig, RunnerInfo, RunnerMode};
+use crate::runner::types::{RunnerConfig, RunnerInfo, RunnerMode, RunnerScope};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -156,6 +156,24 @@ fn default_runner_labels() -> Vec<String> {
 /// use to target container runners (`runs-on: [self-hosted, docker]`).
 fn default_container_labels() -> Vec<String> {
     vec!["self-hosted".to_string(), "docker".to_string()]
+}
+
+/// Resolve the one-time registration token for an organization runner.
+/// Existing organization runners keep their local .runner credentials on restart.
+fn manual_organization_registration_token(
+    already_configured: bool,
+    manual_token: Option<&str>,
+) -> Result<Option<String>> {
+    if already_configured {
+        return Ok(None);
+    }
+    let token = manual_token
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| anyhow::anyhow!(
+            "Organization runners require a registration token copied from GitHub Organization Settings → Actions → Runners → New self-hosted runner."
+        ))?;
+    Ok(Some(token.to_string()))
 }
 
 impl RunnerManager {
@@ -321,7 +339,7 @@ impl RunnerManager {
                 interval.tick().await;
 
                 // Collect busy runners missing job_context
-                let needs_context: Vec<(String, String, String, String, String)> = {
+                let needs_context: Vec<(String, String, RunnerScope, String, String, String)> = {
                     let map = runners.read().await;
                     map.values()
                         .filter(|r| {
@@ -333,6 +351,7 @@ impl RunnerManager {
                             (
                                 r.config.id.clone(),
                                 r.config.name.clone(),
+                                r.config.scope,
                                 r.config.repo_owner.clone(),
                                 r.config.repo_name.clone(),
                                 r.current_job.clone().unwrap(),
@@ -356,11 +375,13 @@ impl RunnerManager {
                     continue;
                 };
 
-                for (runner_id, runner_name, owner, repo, job_name) in needs_context {
-                    match gh
-                        .get_active_run_for_runner(&owner, &repo, &runner_name, &job_name)
-                        .await
-                    {
+                for (runner_id, runner_name, scope, owner, repo, job_name) in needs_context {
+                    let lookup = if scope == RunnerScope::Organization {
+                        gh.get_active_run_for_org_runner(&owner, &runner_name, &job_name).await
+                    } else {
+                        gh.get_active_run_for_runner(&owner, &repo, &runner_name, &job_name).await
+                    };
+                    match lookup {
                         Ok(Some(ctx)) => {
                             tracing::info!(
                                 runner = %runner_id,
@@ -490,6 +511,30 @@ impl RunnerManager {
                 });
             }
         }
+    }
+
+    async fn next_org_runner_number(&self, organization: &str) -> u32 {
+        let prefix = format!("{organization}-runner-");
+        let runners = self.runners.read().await;
+        let existing_nums: std::collections::HashSet<u32> = runners
+            .values()
+            .filter(|runner| {
+                runner.config.scope == RunnerScope::Organization
+                    && runner.config.repo_owner.eq_ignore_ascii_case(organization)
+            })
+            .filter_map(|runner| runner.config.name.strip_prefix(&prefix)?.parse::<u32>().ok())
+            .collect();
+        drop(runners);
+
+        let counter_key = format!("organization:{organization}");
+        let mut counters = self.name_counters.write().await;
+        let counter = counters.entry(counter_key).or_insert(0);
+        let mut num = 1;
+        while existing_nums.contains(&num) || num <= *counter {
+            num += 1;
+        }
+        *counter = num;
+        num
     }
 
     async fn next_runner_number(&self, repo_name: &str) -> u32 {
@@ -1130,11 +1175,53 @@ impl RunnerManager {
         group_id: Option<String>,
         container: Option<types::ContainerConfig>,
     ) -> Result<RunnerInfo> {
-        let parts: Vec<&str> = repo_full_name.split('/').collect();
-        if parts.len() != 2 {
-            bail!("Invalid repo name: expected 'owner/repo'");
+        self.create_scoped(
+            repo_full_name,
+            RunnerScope::Repository,
+            name,
+            labels,
+            mode,
+            group_id,
+            container,
+        ).await
+    }
+
+    pub async fn create_scoped(
+        &self,
+        target: &str,
+        scope: RunnerScope,
+        name: Option<String>,
+        labels: Option<Vec<String>>,
+        mode: Option<RunnerMode>,
+        group_id: Option<String>,
+        container: Option<types::ContainerConfig>,
+    ) -> Result<RunnerInfo> {
+        let target = target.trim();
+        if target.is_empty() || target.contains("://") || target.contains(' ') {
+            bail!("Invalid runner target");
         }
-        let (owner, repo) = (parts[0], parts[1]);
+        let (owner, repo) = match scope {
+            RunnerScope::Repository => {
+                let parts: Vec<&str> = target.split('/').collect();
+                if parts.len() != 2 || parts.iter().any(|part| part.is_empty()) {
+                    bail!("Invalid repository target: expected 'owner/repo'");
+                }
+                (parts[0], parts[1])
+            }
+            RunnerScope::Organization => {
+                if target.contains('/') {
+                    bail!("Invalid organization target: enter the organization login, not a repository");
+                }
+                (target, "")
+            }
+        };
+        let display_target = if scope == RunnerScope::Organization { owner } else { repo };
+
+        if scope == RunnerScope::Organization
+            && matches!(mode.as_ref(), Some(RunnerMode::Container))
+        {
+            bail!("Manual organization registration supports App-managed and Background service modes; Docker container mode is not supported for organization runners.");
+        }
 
         // Container mode needs a real image to run — reject a missing or empty
         // config here rather than let the start path fall back to native
@@ -1153,8 +1240,12 @@ impl RunnerManager {
         let name = match name {
             Some(n) => n,
             None => {
-                let num = self.next_runner_number(repo).await;
-                format!("{repo}-runner-{num}")
+                let num = if scope == RunnerScope::Organization {
+                    self.next_org_runner_number(owner).await
+                } else {
+                    self.next_runner_number(repo).await
+                };
+                format!("{display_target}-runner-{num}")
             }
         };
 
@@ -1208,6 +1299,7 @@ impl RunnerManager {
                 name,
                 repo_owner: owner.to_string(),
                 repo_name: repo.to_string(),
+                scope,
                 labels: resolved_labels,
                 mode: mode.unwrap_or(RunnerMode::App),
                 work_dir,
@@ -1242,14 +1334,29 @@ impl RunnerManager {
         mode: Option<RunnerMode>,
         container: Option<types::ContainerConfig>,
     ) -> Result<(String, Vec<RunnerInfo>, Vec<types::BatchCreateError>)> {
+        self.create_batch_scoped(
+            repo_full_name, RunnerScope::Repository, count, labels, mode, container,
+        ).await
+    }
+
+    pub async fn create_batch_scoped(
+        &self,
+        target: &str,
+        scope: RunnerScope,
+        count: u8,
+        labels: Option<Vec<String>>,
+        mode: Option<RunnerMode>,
+        container: Option<types::ContainerConfig>,
+    ) -> Result<(String, Vec<RunnerInfo>, Vec<types::BatchCreateError>)> {
         let group_id = uuid::Uuid::new_v4().to_string();
         let mut runners = Vec::new();
         let mut errors = Vec::new();
 
         for i in 0..count {
             match self
-                .create(
-                    repo_full_name,
+                .create_scoped(
+                    target,
+                    scope,
                     None,
                     labels.clone(),
                     mode.clone(),
@@ -1301,16 +1408,18 @@ impl RunnerManager {
             let mut sorted = runners.clone();
             sorted.sort_by(|a, b| a.config.name.cmp(&b.config.name));
             let template = &sorted[0];
-            let repo_full_name = format!(
-                "{}/{}",
-                template.config.repo_owner, template.config.repo_name
-            );
+            let target = if template.config.scope == RunnerScope::Organization {
+                template.config.repo_owner.clone()
+            } else {
+                format!("{}/{}", template.config.repo_owner, template.config.repo_name)
+            };
             let to_add = target_count - previous_count;
 
             for _ in 0..to_add {
                 match self
-                    .create(
-                        &repo_full_name,
+                    .create_scoped(
+                        &target,
+                        template.config.scope,
                         None,
                         Some(template.config.labels.clone()),
                         Some(template.config.mode.clone()),
@@ -1455,7 +1564,7 @@ impl RunnerManager {
         let step_name = step.name.clone();
 
         // Find the repository and job ID. Completed jobs retain the job ID in their history URL.
-        let (owner, repo, live_job_id, work_dir, runner_busy) = {
+        let (owner, repo, scope, live_job_id, live_run_url, work_dir, runner_busy) = {
             let runners = self.runners.read().await;
             let runner = runners.get(runner_id).ok_or_else(|| {
                 crate::runner::steps::StepLogError::NotFound(format!(
@@ -1465,11 +1574,26 @@ impl RunnerManager {
             (
                 runner.config.repo_owner.clone(),
                 runner.config.repo_name.clone(),
+                runner.config.scope,
                 runner.job_context.as_ref().and_then(|context| context.job_id),
+                runner.job_context.as_ref().map(|context| context.run_url.clone()),
                 runner.config.work_dir.clone(),
                 runner.state == RunnerState::Busy,
             )
         };
+
+        // An organization runner can execute a workflow from any repository in its
+        // organization. Use the actual repository in the selected workflow run URL.
+        let mut job_owner = owner.clone();
+        let mut job_repo = repo.clone();
+        if scope == RunnerScope::Organization {
+            if let Some(run_url) = live_run_url.as_deref() {
+                if let Some((actual_owner, actual_repo)) = crate::github::repository_from_run_url(run_url) {
+                    job_owner = actual_owner;
+                    job_repo = actual_repo;
+                }
+            }
+        }
 
         // The patched runner writes masked output to step-{GitHub number}.log.
         // Resolve that number by exact step name: local Worker-derived numbers omit
@@ -1479,7 +1603,7 @@ impl RunnerManager {
             if let (Some(job_id), Some(token)) = (live_job_id, token) {
                 if let Ok(gh) = GitHubClient::new(Some(token)) {
                     match gh
-                        .get_job_step_number(&owner, &repo, job_id, &step_name, step_number)
+                        .get_job_step_number(&job_owner, &job_repo, job_id, &step_name, step_number)
                         .await
                     {
                         Ok(github_step_number) => {
@@ -1504,6 +1628,22 @@ impl RunnerManager {
                         }
                     }
                 }
+            }
+
+            // The GitHub job context can arrive a few seconds after the runner starts
+            // a job, particularly for organization runners that must resolve the repository.
+            // Sidecar logs use GitHub's step index; local Worker-derived numbering omits
+            // GitHub's synthetic "Set up job" entry, so the usual index is local + 1.
+            let local_lines = WorkerLogWatcher::read_step_output_from_disk(
+                &work_dir,
+                step_number.saturating_add(1),
+            );
+            if !local_lines.is_empty() {
+                return Ok(crate::api::steps::StepLogsResponse {
+                    step_number,
+                    step_name: step_name.clone(),
+                    lines: local_lines,
+                });
             }
 
             // Compatibility path for older patched runners which mirror explicitly
@@ -1533,12 +1673,47 @@ impl RunnerManager {
                         "No completed job history is available for runner '{runner_id}'."
                     ))
                 })?;
-            let run_url = entry.run_url.as_deref().ok_or_else(|| {
-                crate::runner::steps::StepLogError::NotFound(
-                    "The latest job has no GitHub job URL, so its logs cannot be located."
+            let Some(run_url) = entry.run_url.as_deref() else {
+                // Keep locally captured output available even when the organization
+                // runner's GitHub job context could not be resolved before completion.
+                let local_lines = WorkerLogWatcher::read_step_output_from_disk(
+                    &work_dir,
+                    step_number.saturating_add(1),
+                );
+                if !local_lines.is_empty() {
+                    return Ok(crate::api::steps::StepLogsResponse {
+                        step_number,
+                        step_name: step_name.clone(),
+                        lines: local_lines,
+                    });
+                }
+
+                let compatibility_lines =
+                    WorkerLogWatcher::read_step_logs_from_disk(&work_dir, step_number);
+                if !compatibility_lines.is_empty() {
+                    return Ok(crate::api::steps::StepLogsResponse {
+                        step_number,
+                        step_name: step_name.clone(),
+                        lines: compatibility_lines,
+                    });
+                }
+
+                return Err(crate::runner::steps::StepLogError::NotFound(
+                    "The latest job has no GitHub job URL, and no local step output was captured."
                         .to_string(),
-                )
-            })?;
+                ));
+            };
+            if scope == RunnerScope::Organization {
+                if let Some((actual_owner, actual_repo)) = crate::github::repository_from_run_url(run_url) {
+                    job_owner = actual_owner;
+                    job_repo = actual_repo;
+                } else {
+                    return Err(crate::runner::steps::StepLogError::NotFound(
+                        format!("Could not determine repository from workflow URL: {run_url}")
+                    ));
+                }
+            }
+
             let (_, id) = run_url.rsplit_once("/job/").ok_or_else(|| {
                 crate::runner::steps::StepLogError::NotFound(format!(
                     "The latest job URL does not contain a GitHub job ID: {run_url}"
@@ -1569,7 +1744,7 @@ impl RunnerManager {
         // every action type. Once the job has ended, use GitHub's authoritative
         // per-step log endpoint as a fallback.
         let lines = gh
-            .get_job_step_logs(&owner, &repo, job_id, &step_name, step_number)
+            .get_job_step_logs(&job_owner, &job_repo, job_id, &step_name, step_number)
             .await
             .map_err(|error| {
                 crate::runner::steps::StepLogError::Upstream(format!(
@@ -1662,29 +1837,40 @@ impl RunnerManager {
     /// 7. Store PID, update state to Online
     /// 8. Spawn background monitor task
     pub async fn register_and_start(&self, id: &str, auth_token: &str) -> Result<()> {
-        // 1. Transition Creating -> Registering
-        self.update_state(id, RunnerState::Registering).await?;
-        self.emit_state_event(id, "registering");
-
-        // Continue with the common flow
-        self.do_register_and_start(id, auth_token).await
+        self.register_and_start_with_manual_token(id, auth_token, None).await
     }
 
-    /// Start a runner that is already in the Registering state.
-    /// Used by the start/restart API endpoints.
+    /// Register a new runner, using a pasted one-time token for organization scope.
+    pub async fn register_and_start_with_manual_token(
+        &self,
+        id: &str,
+        auth_token: &str,
+        manual_registration_token: Option<String>,
+    ) -> Result<()> {
+        self.update_state(id, RunnerState::Registering).await?;
+        self.emit_state_event(id, "registering");
+        self.do_register_and_start(id, auth_token, manual_registration_token.as_deref()).await
+    }
+
+    /// Start a runner already in the Registering state.
     pub async fn register_and_start_from_registering(
         &self,
         id: &str,
         auth_token: &str,
     ) -> Result<()> {
         self.emit_state_event(id, "registering");
-        self.do_register_and_start(id, auth_token).await
+        self.do_register_and_start(id, auth_token, None).await
     }
 
     /// Common register-and-start flow (assumes already in Registering state):
     /// Downloads runner binary if needed, removes stale configuration via
     /// the config script's remove command, then runs the config script to register before starting the runner script.
-    async fn do_register_and_start(&self, id: &str, auth_token: &str) -> Result<()> {
+    async fn do_register_and_start(
+        &self,
+        id: &str,
+        auth_token: &str,
+        manual_registration_token: Option<&str>,
+    ) -> Result<()> {
         self.set_auth_token(Some(auth_token.to_string())).await;
 
         let runner = self
@@ -1721,21 +1907,29 @@ impl RunnerManager {
                 .context("Failed to refresh runner binary in work directory")?;
         }
 
-        let gh = GitHubClient::new(Some(auth_token.to_string()))?;
-        let reg = match gh
-            .get_runner_registration_token(&config.repo_owner, &config.repo_name)
-            .await
+        if config.scope == RunnerScope::Organization
+            && config.mode == RunnerMode::Container
         {
-            Ok(reg) => reg,
-            Err(e) => {
-                if crate::github::is_bad_credentials(&e) {
-                    tracing::warn!("GitHub token is invalid (Bad credentials), logging out");
-                    if let Some(ref auth) = self.auth_manager {
-                        let _ = auth.logout().await;
+            bail!("Manual organization registration does not support Docker container mode. Select App-managed or Background service.");
+        }
+
+        let registration_token = if config.scope == RunnerScope::Organization {
+            manual_organization_registration_token(already_configured, manual_registration_token)?
+        } else {
+            let gh = GitHubClient::new(Some(auth_token.to_string()))?;
+            let registration = match gh.get_runner_registration_token(&config.repo_owner, &config.repo_name).await {
+                Ok(registration) => registration,
+                Err(error) => {
+                    if crate::github::is_bad_credentials(&error) {
+                        tracing::warn!("GitHub token is invalid (Bad credentials), logging out");
+                        if let Some(ref auth) = self.auth_manager {
+                            let _ = auth.logout().await;
+                        }
                     }
+                    return Err(error).context("Failed to get registration token");
                 }
-                return Err(e).context("Failed to get registration token");
-            }
+            };
+            Some(registration.token)
         };
 
         // Container runners connect to Docker once up front; native runners
@@ -1747,22 +1941,26 @@ impl RunnerManager {
         };
         let container_cfg = config.container.as_ref();
 
-        // If already configured, deregister before re-configuring.
-        // The config script refuses to configure an already-configured runner, so we
-        // must remove the old configuration first.
-        if already_configured {
+        // Repository runners get fresh registration tokens and reconfigure as before.
+        // Organization runners reuse their existing .runner credentials after first setup.
+        if already_configured && config.scope == RunnerScope::Repository {
+            let token = registration_token.as_deref()
+                .ok_or_else(|| anyhow::anyhow!("Missing repository runner registration token"))?;
             if let (Some(dc), Some(cc)) = (&docker_client, container_cfg) {
-                let _ = docker::deregister(dc, &config.work_dir, &cc.image, &reg.token).await;
+                let _ = docker::deregister(dc, &config.work_dir, &cc.image, token).await;
             } else {
-                let _ = remove_runner(&config.work_dir, &reg.token).await;
+                let _ = remove_runner(&config.work_dir, token).await;
             }
             clean_runner_config(&config.work_dir);
         }
 
-        let repo_url = format!(
-            "https://github.com/{}/{}",
-            config.repo_owner, config.repo_name
-        );
+        let repo_url = if config.scope == RunnerScope::Organization {
+            format!("https://github.com/{}", config.repo_owner)
+        } else {
+            format!("https://github.com/{}/{}", config.repo_owner, config.repo_name)
+        };
+
+        let registration_token = registration_token.as_deref().unwrap_or_default();
 
         type BoxedRead = Pin<Box<dyn AsyncRead + Send>>;
         let (running, stdout, stderr, pid, container_id): (
@@ -1784,7 +1982,7 @@ impl RunnerManager {
                 &config.work_dir,
                 &cc.image,
                 &repo_url,
-                &reg.token,
+                registration_token,
                 &config.name,
                 &config.labels,
                 &container_env,
@@ -1803,16 +2001,20 @@ impl RunnerManager {
                 Some(container_id),
             )
         } else {
-            configure_runner(
-                &config.work_dir,
-                &repo_url,
-                &reg.token,
-                &config.name,
-                &config.labels,
-                custom_runner_url.is_some(),
-            )
-            .await
-            .context("Failed to configure runner")?;
+            // A configured organization runner can be restarted from its local credentials.
+            // Only a new organization runner consumes the manually pasted registration token.
+            if !(config.scope == RunnerScope::Organization && already_configured) {
+                configure_runner(
+                    &config.work_dir,
+                    &repo_url,
+                    registration_token,
+                    &config.name,
+                    &config.labels,
+                    custom_runner_url.is_some(),
+                )
+                .await
+                .context("Failed to configure runner")?;
+            }
 
             // Spawn the runner script (run.sh/run.cmd)
             let mut child = start_runner(&config.work_dir, artifact_results_url)
@@ -1931,21 +2133,23 @@ impl RunnerManager {
                                         map.get(&rid).map(|r| {
                                             (
                                                 r.config.name.clone(),
+                                                r.config.scope,
                                                 r.config.repo_owner.clone(),
                                                 r.config.repo_name.clone(),
                                                 r.current_job.clone(),
                                             )
                                         })
                                     };
-                                    if let Some((name, owner, repo, Some(job_name))) = info {
+                                    if let Some((name, scope, owner, repo, Some(job_name))) = info {
                                         let token = auth_token_clone.read().await.clone();
                                         if let Some(token) = token {
                                             if let Ok(gh) = GitHubClient::new(Some(token)) {
-                                                if let Ok(Some(ctx)) = gh
-                                                    .get_recent_run_for_job(
-                                                        &owner, &repo, &name, &job_name,
-                                                    )
-                                                    .await
+                                                let lookup = if scope == RunnerScope::Organization {
+                                                    gh.get_recent_run_for_org_runner(&owner, &name, &job_name).await
+                                                } else {
+                                                    gh.get_recent_run_for_job(&owner, &repo, &name, &job_name).await
+                                                };
+                                                if let Ok(Some(ctx)) = lookup
                                                 {
                                                     let mut map = runners.write().await;
                                                     if let Some(r) = map.get_mut(&rid) {
@@ -2391,22 +2595,28 @@ impl RunnerManager {
         }
         self.emit_state_event(id, "deleting");
 
-        // Deregister from GitHub
+        // Remote organization deregistration requires a separate GitHub permission.
+        // Remove organization runners locally; their remote entry must be removed manually
+        // in GitHub Organization Settings → Actions → Runners.
         let config = &runner.config;
-        if let Ok(gh) = GitHubClient::new(Some(auth_token.to_string())) {
-            if let Ok(reg) = gh
-                .get_runner_registration_token(&config.repo_owner, &config.repo_name)
-                .await
-            {
-                if let Some(cc) = config.container.as_ref() {
-                    if let Ok(dc) = docker::connect() {
-                        let _ =
-                            docker::deregister(&dc, &config.work_dir, &cc.image, &reg.token).await;
+        if config.scope == RunnerScope::Repository {
+            if let Ok(gh) = GitHubClient::new(Some(auth_token.to_string())) {
+                if let Ok(reg) = gh.get_runner_registration_token(&config.repo_owner, &config.repo_name).await {
+                    if let Some(cc) = config.container.as_ref() {
+                        if let Ok(dc) = docker::connect() {
+                            let _ = docker::deregister(&dc, &config.work_dir, &cc.image, &reg.token).await;
+                        }
+                    } else {
+                        let _ = remove_runner(&config.work_dir, &reg.token).await;
                     }
-                } else {
-                    let _ = remove_runner(&config.work_dir, &reg.token).await;
                 }
             }
+        } else {
+            tracing::warn!(
+                runner = %id,
+                organization = %config.repo_owner,
+                "Organization runner was removed locally; remove its registration in GitHub organization settings separately"
+            );
         }
 
         // Remove runner entry and work dir
@@ -2479,11 +2689,12 @@ impl RunnerManager {
     /// Try to fetch job context from GitHub for a runner that's missing it.
     /// Called at job completion for fast jobs that finish before the poller runs.
     pub async fn fetch_missing_job_context(&self, runner_id: &str) -> Option<types::JobContext> {
-        let (runner_name, owner, repo, job_name) = {
+        let (runner_name, scope, owner, repo, job_name) = {
             let map = self.runners.read().await;
             let r = map.get(runner_id)?;
             (
                 r.config.name.clone(),
+                r.config.scope,
                 r.config.repo_owner.clone(),
                 r.config.repo_name.clone(),
                 r.current_job.clone()?,
@@ -2493,10 +2704,13 @@ impl RunnerManager {
         let token = self.auth_token.read().await.clone()?;
         let gh = GitHubClient::new(Some(token)).ok()?;
 
-        match gh
-            .get_recent_run_for_job(&owner, &repo, &runner_name, &job_name)
-            .await
-        {
+        let lookup = if scope == RunnerScope::Organization {
+            gh.get_recent_run_for_org_runner(&owner, &runner_name, &job_name).await
+        } else {
+            gh.get_recent_run_for_job(&owner, &repo, &runner_name, &job_name).await
+        };
+
+        match lookup {
             Ok(ctx) => ctx,
             Err(e) => {
                 tracing::debug!(
@@ -2907,6 +3121,7 @@ mod tests {
                 name: "test-runner".to_string(),
                 repo_owner: "owner".to_string(),
                 repo_name: "repo".to_string(),
+                scope: RunnerScope::Repository,
                 labels: vec!["self-hosted".to_string()],
                 mode: RunnerMode::App,
                 work_dir: std::path::PathBuf::from("/tmp/runner-abc"),
@@ -3245,6 +3460,7 @@ mod tests {
                 name: "n".to_string(),
                 repo_owner: "o".to_string(),
                 repo_name: "r".to_string(),
+                scope: RunnerScope::Repository,
                 labels: vec![],
                 mode: RunnerMode::App,
                 work_dir: std::path::PathBuf::from("/tmp"),
@@ -3282,6 +3498,7 @@ mod tests {
                 name: "n".to_string(),
                 repo_owner: "o".to_string(),
                 repo_name: "r".to_string(),
+                scope: RunnerScope::Repository,
                 labels: vec![],
                 mode: RunnerMode::App,
                 work_dir: std::path::PathBuf::from("/tmp"),
@@ -3319,6 +3536,7 @@ mod tests {
                 name: "n".to_string(),
                 repo_owner: "o".to_string(),
                 repo_name: "r".to_string(),
+                scope: RunnerScope::Repository,
                 labels: vec![],
                 mode: RunnerMode::App,
                 work_dir: std::path::PathBuf::from("/tmp"),
@@ -3369,6 +3587,7 @@ mod tests {
                 name: "n".to_string(),
                 repo_owner: "o".to_string(),
                 repo_name: "r".to_string(),
+                scope: RunnerScope::Repository,
                 labels: vec![],
                 mode: RunnerMode::App,
                 work_dir: std::path::PathBuf::from("/tmp"),
@@ -3403,6 +3622,7 @@ mod tests {
                 name: "n".to_string(),
                 repo_owner: "o".to_string(),
                 repo_name: "r".to_string(),
+                scope: RunnerScope::Repository,
                 labels: vec![],
                 mode: RunnerMode::App,
                 work_dir: std::path::PathBuf::from("/tmp"),
@@ -3437,6 +3657,7 @@ mod tests {
                 name: "n".to_string(),
                 repo_owner: "o".to_string(),
                 repo_name: "r".to_string(),
+                scope: RunnerScope::Repository,
                 labels: vec![],
                 mode: RunnerMode::App,
                 work_dir: std::path::PathBuf::from("/tmp"),
@@ -3473,6 +3694,7 @@ mod tests {
                 name: "n2".to_string(),
                 repo_owner: "o".to_string(),
                 repo_name: "r".to_string(),
+                scope: RunnerScope::Repository,
                 labels: vec![],
                 mode: RunnerMode::App,
                 work_dir: std::path::PathBuf::from("/tmp"),
@@ -3521,6 +3743,7 @@ mod tests {
                     name: "n1".to_string(),
                     repo_owner: "o".to_string(),
                     repo_name: "r".to_string(),
+                    scope: RunnerScope::Repository,
                     labels: vec![],
                     mode: RunnerMode::App,
                     work_dir: std::path::PathBuf::from("/tmp"),
@@ -3558,6 +3781,7 @@ mod tests {
                 name: "n2".to_string(),
                 repo_owner: "o".to_string(),
                 repo_name: "r".to_string(),
+                scope: RunnerScope::Repository,
                 labels: vec![],
                 mode: RunnerMode::App,
                 work_dir: std::path::PathBuf::from("/tmp"),
@@ -3622,6 +3846,7 @@ mod tests {
                     name: "n1".to_string(),
                     repo_owner: "o".to_string(),
                     repo_name: "r".to_string(),
+                    scope: RunnerScope::Repository,
                     labels: vec![],
                     mode: RunnerMode::App,
                     work_dir: std::path::PathBuf::from("/tmp"),
@@ -3660,6 +3885,7 @@ mod tests {
                 name: "n".to_string(),
                 repo_owner: "o".to_string(),
                 repo_name: "r".to_string(),
+                scope: RunnerScope::Repository,
                 labels: vec![],
                 mode: RunnerMode::App,
                 work_dir: std::path::PathBuf::from("/tmp"),
@@ -3696,6 +3922,7 @@ mod tests {
                 name: "n2".to_string(),
                 repo_owner: "o".to_string(),
                 repo_name: "r".to_string(),
+                scope: RunnerScope::Repository,
                 labels: vec![],
                 mode: RunnerMode::App,
                 work_dir: std::path::PathBuf::from("/tmp"),
@@ -3743,6 +3970,7 @@ mod tests {
                     name: "n1".to_string(),
                     repo_owner: "o".to_string(),
                     repo_name: "r".to_string(),
+                    scope: RunnerScope::Repository,
                     labels: vec![],
                     mode: RunnerMode::App,
                     work_dir: std::path::PathBuf::from("/tmp"),
@@ -3981,6 +4209,7 @@ mod tests {
                 name: "test-runner".to_string(),
                 repo_owner: "owner".to_string(),
                 repo_name: "repo".to_string(),
+                scope: RunnerScope::Repository,
                 labels: vec![],
                 mode: RunnerMode::App,
                 work_dir: std::path::PathBuf::from("/tmp/runner-abc"),
@@ -4031,6 +4260,7 @@ mod tests {
                     name: "test".to_string(),
                     repo_owner: "owner".to_string(),
                     repo_name: "repo".to_string(),
+                    scope: RunnerScope::Repository,
                     labels: vec![],
                     mode: RunnerMode::App,
                     work_dir: std::path::PathBuf::from("/tmp/test"),
@@ -4182,6 +4412,7 @@ mod tests {
                     name: "test-runner".to_string(),
                     repo_owner: "owner".to_string(),
                     repo_name: "repo".to_string(),
+                    scope: RunnerScope::Repository,
                     labels: vec![],
                     mode: RunnerMode::App,
                     work_dir: std::path::PathBuf::from("/tmp/test"),
@@ -4240,6 +4471,7 @@ mod tests {
                         name: name.to_string(),
                         repo_owner: "owner".to_string(),
                         repo_name: "repo".to_string(),
+                        scope: RunnerScope::Repository,
                         labels: vec![],
                         mode: RunnerMode::App,
                         work_dir: std::path::PathBuf::from(format!("/tmp/{id}")),
@@ -4584,5 +4816,29 @@ mod tests {
             err.to_string().contains("may only contain"),
             "unexpected: {err}"
         );
+    }
+}
+
+#[cfg(test)]
+mod manual_organization_registration_token_tests {
+    use super::manual_organization_registration_token;
+
+    #[test]
+    fn requires_token_for_new_organization_runner() {
+        let error = manual_organization_registration_token(false, None).unwrap_err();
+        assert!(error.to_string().contains("registration token"));
+    }
+
+    #[test]
+    fn trims_pasted_one_time_token() {
+        assert_eq!(
+            manual_organization_registration_token(false, Some("  abc123  ")).unwrap(),
+            Some("abc123".to_string())
+        );
+    }
+
+    #[test]
+    fn existing_organization_runner_restart_does_not_need_a_new_token() {
+        assert_eq!(manual_organization_registration_token(true, None).unwrap(), None);
     }
 }

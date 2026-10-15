@@ -139,7 +139,9 @@ export function RunnerTable({
     for (const runner of runners) {
       if (runner.config.group_id) {
         const prefix = runner.config.name.replace(/-\d+$/, "");
-        const repo = `${runner.config.repo_owner}/${runner.config.repo_name}`;
+        const repo = runner.config.scope === "organization"
+          ? `${runner.config.repo_owner} (organization)`
+          : `${runner.config.repo_owner}/${runner.config.repo_name}`;
         const key = `${prefix}::${repo}`;
         const existing = mergedMap.get(key) ?? [];
         existing.push(runner);
@@ -413,7 +415,9 @@ function RunnerRow({
               {runner.config.mode === "container" && <DockerBadge />}
               {!inGroup && (
                 <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>
-                  {runner.config.repo_owner}/{runner.config.repo_name}
+                  {runner.config.scope === "organization"
+                    ? `${runner.config.repo_owner} (organization)`
+                    : `${runner.config.repo_owner}/${runner.config.repo_name}`}
                 </span>
               )}
             </div>

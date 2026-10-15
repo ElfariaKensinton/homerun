@@ -251,4 +251,34 @@ describe("NewRunnerWizard", () => {
       expect(screen.getByText(/Network error/)).toBeInTheDocument();
     });
   });
+
+  it("creates an organization-scoped runner with a manual registration token", async () => {
+    const { props } = await renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Organization" }));
+    fireEvent.change(screen.getByPlaceholderText("Organization login (e.g. acme)"), {
+      target: { value: "acme" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+
+    const configureNext = screen.getByRole("button", { name: "Next" });
+    expect(configureNext).toBeDisabled();
+    fireEvent.change(screen.getByPlaceholderText("Paste organization registration token"), {
+      target: { value: "registration-token-from-github" },
+    });
+    expect(configureNext).toBeEnabled();
+    fireEvent.click(configureNext);
+    fireEvent.click(screen.getByRole("button", { name: "Launch Runner" }));
+
+    await waitFor(() => expect(props.onCreate).toHaveBeenCalledTimes(1));
+    expect(props.onCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        repo_full_name: "",
+        scope: "organization",
+        organization: "acme",
+        manual_registration_token: "registration-token-from-github",
+        mode: "app",
+      }),
+    );
+  });
 });

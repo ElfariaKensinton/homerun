@@ -23,6 +23,10 @@ use hyper::Request;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 
+fn default_runner_scope() -> String {
+    "repository".to_string()
+}
+
 // --- Response types (mirror daemon's API responses) ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,6 +42,8 @@ pub struct RunnerConfig {
     pub name: String,
     pub repo_owner: String,
     pub repo_name: String,
+    #[serde(default = "default_runner_scope")]
+    pub scope: String,
     pub labels: Vec<String>,
     pub mode: String,
     pub work_dir: PathBuf,
@@ -211,6 +217,12 @@ pub struct RepoInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateRunnerRequest {
     pub repo_full_name: String,
+    #[serde(default)]
+    pub organization: Option<String>,
+    #[serde(default = "default_runner_scope")]
+    pub scope: String,
+    #[serde(default)]
+    pub manual_registration_token: Option<String>,
     pub name: Option<String>,
     pub labels: Option<Vec<String>>,
     pub mode: Option<String>,
@@ -221,6 +233,10 @@ pub struct CreateRunnerRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateBatchRequest {
     pub repo_full_name: String,
+    #[serde(default)]
+    pub organization: Option<String>,
+    #[serde(default = "default_runner_scope")]
+    pub scope: String,
     pub count: u8,
     pub labels: Option<Vec<String>>,
     pub mode: Option<String>,
@@ -809,5 +825,74 @@ mod preferences_tests {
         );
         assert!(out["watch_new_repositories"].as_bool().unwrap());
         assert!(out["auto_create_runner_for_new_repositories"].as_bool().unwrap());
+    }
+}
+
+#[cfg(test)]
+mod organization_scope_tests {
+    use super::{CreateBatchRequest, CreateRunnerRequest, RunnerConfig};
+
+    #[test]
+    fn batch_request_forwards_organization_scope() {
+        let request = CreateBatchRequest {
+            repo_full_name: String::new(),
+            organization: Some("ElfariaCorporation".to_string()),
+            scope: "organization".to_string(),
+            count: 5,
+            labels: None,
+            mode: Some("app".to_string()),
+            container: None,
+        };
+
+        let json = serde_json::to_value(request).unwrap();
+        assert_eq!(json["scope"], "organization");
+        assert_eq!(json["organization"], "ElfariaCorporation");
+        assert_eq!(json["repo_full_name"], "");
+    }
+
+    #[test]
+    fn single_request_forwards_organization_scope() {
+        let request = CreateRunnerRequest {
+            repo_full_name: String::new(),
+            organization: Some("ElfariaCorporation".to_string()),
+            scope: "organization".to_string(),
+            manual_registration_token: Some("manual-runner-token".to_string()),
+            name: None,
+            labels: None,
+            mode: Some("app".to_string()),
+            container: None,
+        };
+
+        let json = serde_json::to_value(request).unwrap();
+        assert_eq!(json["scope"], "organization");
+        assert_eq!(json["organization"], "ElfariaCorporation");
+        assert_eq!(json["manual_registration_token"], "manual-runner-token");
+    }
+
+    #[test]
+    fn older_requests_default_to_repository_scope() {
+        let request: CreateBatchRequest = serde_json::from_str(
+            r#"{"repo_full_name":"owner/repo","count":2}"#,
+        )
+        .unwrap();
+        assert_eq!(request.scope, "repository");
+        assert!(request.organization.is_none());
+    }
+
+    #[test]
+    fn old_runner_responses_default_to_repository_scope() {
+        let runner: RunnerConfig = serde_json::from_str(
+            r#"{
+                "id":"runner-id",
+                "name":"runner",
+                "repo_owner":"owner",
+                "repo_name":"repo",
+                "labels":["self-hosted"],
+                "mode":"app",
+                "work_dir":"/tmp/runner"
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(runner.scope, "repository");
     }
 }

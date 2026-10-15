@@ -576,7 +576,9 @@ export function RunnerDetail() {
                     href="#"
                     onClick={(e) => {
                       e.preventDefault();
-                      let url = `https://github.com/${config.repo_owner}/${config.repo_name}/actions`;
+                      let url = config.scope === "organization"
+                        ? `https://github.com/orgs/${config.repo_owner}/actions`
+                        : `https://github.com/${config.repo_owner}/${config.repo_name}/actions`;
                       if (job_context?.run_url) {
                         url =
                           job_context.job_id != null
@@ -717,7 +719,10 @@ export function RunnerDetail() {
                   onClick={(e) => {
                     e.preventDefault();
                     import("@tauri-apps/plugin-shell").then(({ open }) => {
-                      open(`https://github.com/${config.repo_owner}/${config.repo_name}/actions`);
+                      const url = config.scope === "organization"
+                        ? `https://github.com/orgs/${config.repo_owner}/actions`
+                        : `https://github.com/${config.repo_owner}/${config.repo_name}/actions`;
+                      open(url);
                     });
                   }}
                   style={{ color: "var(--accent-blue)", fontSize: 13 }}
