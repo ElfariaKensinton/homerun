@@ -1470,16 +1470,21 @@ impl RunnerManager {
             )
         };
 
-        // Do not read numbered local sidecar files here. Their numbering is not
-        // guaranteed to match the compact step numbers reconstructed from Worker
-        // diagnostics, so a valid file can still belong to a different displayed
-        // step. While the job runs, wait for authoritative per-step logs to become
-        // available; once it completes, resolve logs through GitHub by step name.
+        // While the job is running, use only output that the WorkerLogWatcher
+        // attributed to this exact displayed step from explicit HOMERUN_STEP_OUTPUT
+        // markers. This uses the same compact numbering as get_steps(), unlike the
+        // sidecar filenames, which can include GitHub's setup/post steps.
         if runner_busy {
+            let live_lines = self
+                .step_watcher
+                .get_step_logs(runner_id, step_number)
+                .await
+                .unwrap_or_default();
+
             return Ok(crate::api::steps::StepLogsResponse {
                 step_number,
                 step_name,
-                lines: Vec::new(),
+                lines: live_lines,
             });
         }
 
