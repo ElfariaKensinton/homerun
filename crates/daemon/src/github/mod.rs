@@ -440,12 +440,7 @@ impl GitHubClient {
         local_step_number: u16,
     ) -> Result<u16> {
         let job = self.get_job_details(owner, repo, job_id).await?;
-        let step_index = resolve_job_step_index(
-            &job.steps.iter().map(|step| step.name.clone()).collect::<Vec<_>>(),
-            step_name,
-            local_step_number,
-        )?;
-        Ok(job.steps[step_index].number)
+        resolve_job_step_number(&job.steps, step_name, local_step_number)
     }
 
     /// Fetch plain-text logs for one GitHub Actions step.
@@ -657,6 +652,18 @@ fn extract_step_logs_by_time(
     Some(lines.join("\n"))
 }
 
+/// Resolve a local displayed step to its actual GitHub step number.
+/// The returned number is the timeline order used by the patched runner's sidecar.
+fn resolve_job_step_number(
+    steps: &[GitHubJobStep],
+    step_name: &str,
+    local_step_number: u16,
+) -> Result<u16> {
+    let names = steps.iter().map(|step| step.name.clone()).collect::<Vec<_>>();
+    let index = resolve_job_step_index(&names, step_name, local_step_number)?;
+    Ok(steps[index].number)
+}
+
 /// Resolve a HomeRun step to exactly one GitHub job step by normalized name.
 ///
 /// Never fall back to the local numeric position: Worker-derived step numbers can be
@@ -772,6 +779,39 @@ mod tests {
         ).unwrap();
 
         assert_eq!(output, "Build output");
+    }
+
+    #[test]
+    fn live_sidecar_uses_github_step_number_not_compact_local_number() {
+        let steps = vec![
+            GitHubJobStep {
+                name: "Set up job".to_string(),
+                number: 1,
+                started_at: None,
+                completed_at: None,
+            },
+            GitHubJobStep {
+                name: "Run actions/checkout@v4".to_string(),
+                number: 2,
+                started_at: None,
+                completed_at: None,
+            },
+            GitHubJobStep {
+                name: "Generate project".to_string(),
+                number: 3,
+                started_at: None,
+                completed_at: None,
+            },
+            GitHubJobStep {
+                name: "Build".to_string(),
+                number: 4,
+                started_at: None,
+                completed_at: None,
+            },
+        ];
+
+        assert_eq!(resolve_job_step_number(&steps, "Run actions/checkout@v4", 1).unwrap(), 2);
+        assert_eq!(resolve_job_step_number(&steps, "Build", 3).unwrap(), 4);
     }
 
     #[test]
