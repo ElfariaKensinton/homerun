@@ -405,11 +405,22 @@ struct RunnerDetailView: View {
 
         while !Task.isCancelled && section == "Steps" && selectedStep == targetStep {
             if let refreshed = try? await model.loadSteps(runnerId) {
+                guard !Task.isCancelled, section == "Steps", selectedStep == targetStep else { return }
                 steps = refreshed
             }
+            guard !Task.isCancelled, section == "Steps", selectedStep == targetStep else { return }
 
             do {
                 let response = try await model.loadStepLogs(runnerId, step: targetStep)
+                // A cancelled request can still finish after the user selects another
+                // step. Never let that stale response replace the newly selected step's logs.
+                guard !Task.isCancelled, section == "Steps", selectedStep == targetStep else { return }
+                guard response.stepNumber == targetStep else {
+                    stepLogs = nil
+                    stepLogStatusMessage = "Received logs for step \(response.stepNumber), expected step \(targetStep)."
+                    return
+                }
+
                 stepLogs = response
                 if !response.lines.isEmpty {
                     stepLogStatusMessage = nil
@@ -419,6 +430,7 @@ struct RunnerDetailView: View {
                     stepLogStatusMessage = "No log output was returned for this step."
                 }
             } catch {
+                guard !Task.isCancelled, section == "Steps", selectedStep == targetStep else { return }
                 let message = error.localizedDescription
                 if runner?.state == .busy &&
                     (message.contains("404") || message.contains("BlobNotFound")) {

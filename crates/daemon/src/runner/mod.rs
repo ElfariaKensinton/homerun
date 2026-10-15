@@ -1455,7 +1455,7 @@ impl RunnerManager {
         let step_name = step.name.clone();
 
         // Find the repository and job ID. Completed jobs retain the job ID in their history URL.
-        let (owner, repo, live_job_id, work_dir, runner_busy) = {
+        let (owner, repo, live_job_id, runner_busy) = {
             let runners = self.runners.read().await;
             let runner = runners.get(runner_id).ok_or_else(|| {
                 crate::runner::steps::StepLogError::NotFound(format!(
@@ -1466,28 +1466,15 @@ impl RunnerManager {
                 runner.config.repo_owner.clone(),
                 runner.config.repo_name.clone(),
                 runner.job_context.as_ref().and_then(|context| context.job_id),
-                runner.config.work_dir.clone(),
                 runner.state == RunnerState::Busy,
             )
         };
 
-        // Prefer the runner's dedicated user-facing output file. It receives masked
-        // step output directly and never includes Worker diagnostic chatter.
-        let output_lines =
-            WorkerLogWatcher::read_step_output_from_disk(&work_dir, step_number);
-        if !output_lines.is_empty() {
-            return Ok(crate::api::steps::StepLogsResponse {
-                step_number,
-                step_name: step_name.clone(),
-                lines: output_lines,
-            });
-        }
-
-        // Never substitute raw Worker diagnostics for step output: diagnostic lines
-        // are not reliably attributed to a workflow step and can show another step's
-        // contents under the wrong heading. If the dedicated output file is empty,
-        // wait for the next poll while the job runs; after completion use GitHub's
-        // authoritative per-step log endpoint below.
+        // Do not read numbered local sidecar files here. Their numbering is not
+        // guaranteed to match the compact step numbers reconstructed from Worker
+        // diagnostics, so a valid file can still belong to a different displayed
+        // step. While the job runs, wait for authoritative per-step logs to become
+        // available; once it completes, resolve logs through GitHub by step name.
         if runner_busy {
             return Ok(crate::api::steps::StepLogsResponse {
                 step_number,

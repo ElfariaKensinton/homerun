@@ -426,36 +426,8 @@ impl GitHubClient {
 
         let route = format!("/repos/{owner}/{repo}/actions/jobs/{job_id}");
         let job: JobDetails = self.octocrab.get(&route, None::<&()>).await?;
-        let normalize = |name: &str| -> String {
-            name.chars()
-                .filter(|ch| ch.is_ascii_alphanumeric())
-                .map(|ch| ch.to_ascii_lowercase())
-                .collect()
-        };
-        let requested = normalize(step_name);
-        let exact_index = job
-            .steps
-            .iter()
-            .position(|candidate| normalize(&candidate.name) == requested);
-        let fuzzy_index = if requested.len() >= 4 {
-            job.steps.iter().position(|candidate| {
-                let candidate_name = normalize(&candidate.name);
-                candidate_name.len() >= 4
-                    && (candidate_name.contains(&requested) || requested.contains(&candidate_name))
-            })
-        } else {
-            None
-        };
-        let fallback_index = usize::from(local_step_number.saturating_sub(1));
-        let step_index = exact_index
-            .or(fuzzy_index)
-            .or_else(|| (fallback_index < job.steps.len()).then_some(fallback_index))
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Could not map HomeRun step {local_step_number} ('{step_name}') to GitHub job {job_id}; GitHub reported {} steps",
-                    job.steps.len()
-                )
-            })?;
+        let step_names = job.steps.iter().map(|step| step.name.clone()).collect::<Vec<_>>();
+        let step_index = resolve_job_step_index(&step_names, step_name, local_step_number)?;
 
         let url = format!(
             "https://api.github.com/repos/{owner}/{repo}/actions/jobs/{job_id}/steps/{step_index}/logs"
@@ -587,6 +559,42 @@ fn extract_annotation_message(json: &str) -> Option<String> {
     annotations.into_iter().find_map(|a| a.message)
 }
 
+/// Resolve a HomeRun step to exactly one GitHub job step by normalized name.
+///
+/// Never fall back to the local numeric position: Worker-derived step numbers can be
+/// offset from GitHub's job-step list (which also contains setup and post steps).
+/// Returning an error is safer than presenting a different step's log under this name.
+fn resolve_job_step_index(
+    step_names: &[String],
+    step_name: &str,
+    local_step_number: u16,
+) -> anyhow::Result<usize> {
+    let normalize = |name: &str| -> String {
+        name.chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .map(|ch| ch.to_ascii_lowercase())
+            .collect()
+    };
+    let requested = normalize(step_name);
+    let matches = step_names
+        .iter()
+        .enumerate()
+        .filter(|(_, candidate)| normalize(candidate) == requested)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+
+    match matches.as_slice() {
+        [index] => Ok(*index),
+        [] => anyhow::bail!(
+            "Could not safely map HomeRun step {local_step_number} ('{step_name}') to a GitHub job step by name; GitHub reported {} steps",
+            step_names.len()
+        ),
+        _ => anyhow::bail!(
+            "Could not safely map HomeRun step {local_step_number} ('{step_name}') because its name matches multiple GitHub steps at zero-based positions {matches:?}; refusing to return potentially incorrect logs"
+        ),
+    }
+}
+
 /// Parse raw GitHub Actions job log text into sections by step name.
 ///
 /// The log format uses `##[group]Step Name` / `##[endgroup]` markers to delimit
@@ -632,6 +640,34 @@ pub fn parse_job_log_sections(raw_log: &str) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn step_logs_resolve_by_name_even_when_local_number_is_offset() {
+        let names = vec![
+            "Set up job".to_string(),
+            "Run actions/checkout@v6".to_string(),
+            "Build".to_string(),
+        ];
+        assert_eq!(resolve_job_step_index(&names, "Build", 1).unwrap(), 2);
+    }
+
+    #[test]
+    fn step_logs_do_not_fall_back_to_an_unrelated_position() {
+        let names = vec![
+            "Set up job".to_string(),
+            "Checkout".to_string(),
+            "Build".to_string(),
+        ];
+        let error = resolve_job_step_index(&names, "Lint", 2).unwrap_err();
+        assert!(error.to_string().contains("Could not safely map"));
+    }
+
+    #[test]
+    fn step_logs_reject_ambiguous_duplicate_names() {
+        let names = vec!["Test".to_string(), "Test".to_string()];
+        let error = resolve_job_step_index(&names, "Test", 2).unwrap_err();
+        assert!(error.to_string().contains("multiple GitHub steps"));
+    }
 
     #[test]
     fn test_github_client_requires_token() {
