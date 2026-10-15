@@ -1455,7 +1455,7 @@ impl RunnerManager {
         let step_name = step.name.clone();
 
         // Find the repository and job ID. Completed jobs retain the job ID in their history URL.
-        let (owner, repo, live_job_id, runner_busy) = {
+        let (owner, repo, live_job_id, work_dir, runner_busy) = {
             let runners = self.runners.read().await;
             let runner = runners.get(runner_id).ok_or_else(|| {
                 crate::runner::steps::StepLogError::NotFound(format!(
@@ -1466,15 +1466,50 @@ impl RunnerManager {
                 runner.config.repo_owner.clone(),
                 runner.config.repo_name.clone(),
                 runner.job_context.as_ref().and_then(|context| context.job_id),
+                runner.config.work_dir.clone(),
                 runner.state == RunnerState::Busy,
             )
         };
 
-        // While the job is running, use only output that the WorkerLogWatcher
-        // attributed to this exact displayed step from explicit HOMERUN_STEP_OUTPUT
-        // markers. This uses the same compact numbering as get_steps(), unlike the
-        // sidecar filenames, which can include GitHub's setup/post steps.
+        // The patched runner writes masked output to step-{GitHub number}.log.
+        // Resolve that number by exact step name: local Worker-derived numbers omit
+        // GitHub's synthetic setup step, so using step_number directly shifts logs.
         if runner_busy {
+            if let (Some(job_id), Some(token)) = (
+                live_job_id,
+                self.auth_token.read().await.clone(),
+            ) {
+                if let Ok(gh) = GitHubClient::new(Some(token)) {
+                    match gh
+                        .get_job_step_number(&owner, &repo, job_id, &step_name, step_number)
+                        .await
+                    {
+                        Ok(github_step_number) => {
+                            let sidecar_lines =
+                                WorkerLogWatcher::read_step_output_from_disk(&work_dir, github_step_number);
+                            if !sidecar_lines.is_empty() {
+                                return Ok(crate::api::steps::StepLogsResponse {
+                                    step_number,
+                                    step_name: step_name.clone(),
+                                    lines: sidecar_lines,
+                                });
+                            }
+                        }
+                        Err(error) => {
+                            tracing::debug!(
+                                runner_id = %runner_id,
+                                step_number,
+                                step_name = %step_name,
+                                error = %error,
+                                "Could not map live step output to GitHub step number yet"
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Compatibility path for older patched runners which mirror explicitly
+            // marked output into Worker diagnostics. Never return unmarked diagnostics.
             let live_lines = self
                 .step_watcher
                 .get_step_logs(runner_id, step_number)

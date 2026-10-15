@@ -11,6 +11,22 @@ pub fn is_bad_credentials(err: &anyhow::Error) -> bool {
     msg.contains("Bad credentials") || msg.contains("status code 401")
 }
 
+#[derive(Debug, Deserialize)]
+struct GitHubJobStep {
+    name: String,
+    number: u16,
+    #[serde(default)]
+    started_at: Option<String>,
+    #[serde(default)]
+    completed_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubJobDetails {
+    #[serde(default)]
+    steps: Vec<GitHubJobStep>,
+}
+
 pub struct GitHubClient {
     octocrab: octocrab::Octocrab,
     token: String,
@@ -401,6 +417,37 @@ impl GitHubClient {
         Ok(body)
     }
 
+    async fn get_job_details(
+        &self,
+        owner: &str,
+        repo: &str,
+        job_id: u64,
+    ) -> Result<GitHubJobDetails> {
+        let route = format!("/repos/{owner}/{repo}/actions/jobs/{job_id}");
+        Ok(self.octocrab.get(&route, None::<&()>).await?)
+    }
+
+    /// Resolve a locally discovered step name to the actual GitHub step number.
+    /// The local list omits GitHub's synthetic "Set up job" entry, so using the
+    /// local index to open the runner's step-{number}.log sidecar selects the prior
+    /// step (for example, local Checkout #1 vs GitHub Checkout #2).
+    pub async fn get_job_step_number(
+        &self,
+        owner: &str,
+        repo: &str,
+        job_id: u64,
+        step_name: &str,
+        local_step_number: u16,
+    ) -> Result<u16> {
+        let job = self.get_job_details(owner, repo, job_id).await?;
+        let step_index = resolve_job_step_index(
+            &job.steps.iter().map(|step| step.name.clone()).collect::<Vec<_>>(),
+            step_name,
+            local_step_number,
+        )?;
+        Ok(job.steps[step_index].number)
+    }
+
     /// Fetch plain-text logs for one GitHub Actions step.
     ///
     /// HomeRun step numbers are 1-based. GitHub's step-log endpoint uses a
@@ -414,24 +461,12 @@ impl GitHubClient {
         step_name: &str,
         local_step_number: u16,
     ) -> Result<String> {
-        #[derive(Deserialize)]
-        struct JobStep {
-            name: String,
-            #[serde(default)]
-            started_at: Option<String>,
-            #[serde(default)]
-            completed_at: Option<String>,
-        }
-        #[derive(Deserialize)]
-        struct JobDetails {
-            #[serde(default)]
-            steps: Vec<JobStep>,
-        }
-
-        let route = format!("/repos/{owner}/{repo}/actions/jobs/{job_id}");
-        let job: JobDetails = self.octocrab.get(&route, None::<&()>).await?;
-        let step_names = job.steps.iter().map(|step| step.name.clone()).collect::<Vec<_>>();
-        let step_index = resolve_job_step_index(&step_names, step_name, local_step_number)?;
+        let job = self.get_job_details(owner, repo, job_id).await?;
+        let step_index = resolve_job_step_index(
+            &job.steps.iter().map(|step| step.name.clone()).collect::<Vec<_>>(),
+            step_name,
+            local_step_number,
+        )?;
 
         let url = format!(
             "https://api.github.com/repos/{owner}/{repo}/actions/jobs/{job_id}/steps/{step_index}/logs"
