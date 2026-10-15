@@ -1475,10 +1475,8 @@ impl RunnerManager {
         // Resolve that number by exact step name: local Worker-derived numbers omit
         // GitHub's synthetic setup step, so using step_number directly shifts logs.
         if runner_busy {
-            if let (Some(job_id), Some(token)) = (
-                live_job_id,
-                self.auth_token.read().await.clone(),
-            ) {
+            let token = self.auth_token.read().await.clone();
+            if let (Some(job_id), Some(token)) = (live_job_id, token) {
                 if let Ok(gh) = GitHubClient::new(Some(token)) {
                     match gh
                         .get_job_step_number(&owner, &repo, job_id, &step_name, step_number)
