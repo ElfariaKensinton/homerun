@@ -1,6 +1,6 @@
 pub mod types;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use types::{RepoInfo, RunnerRegistration};
 
@@ -461,10 +461,14 @@ impl GitHubClient {
                 job.steps[step_index].started_at.as_deref(),
                 job.steps[step_index].completed_at.as_deref(),
             ) {
-                let full_log = self.get_job_logs(owner, repo, job_id).await
-                    .with_context(|| format!(
-                        "Step '{step_name}' log download returned 404 and the full job log could not be fetched"
-                    ))?;
+                let full_log = self
+                    .get_job_logs(owner, repo, job_id)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Step '{step_name}' log download returned 404 and the full job log could not be fetched"
+                        )
+                    })?;
                 if let Some(step_log) =
                     extract_step_logs_by_time(&full_log, started_at, completed_at)
                 {
@@ -713,7 +717,8 @@ mod tests {
             raw_log,
             "2026-10-15T04:00:01Z",
             "2026-10-15T04:00:02Z",
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(output, "Build command\nBuild result");
     }
