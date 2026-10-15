@@ -417,6 +417,10 @@ impl GitHubClient {
         #[derive(Deserialize)]
         struct JobStep {
             name: String,
+            #[serde(default)]
+            started_at: Option<String>,
+            #[serde(default)]
+            completed_at: Option<String>,
         }
         #[derive(Deserialize)]
         struct JobDetails {
@@ -440,22 +444,45 @@ impl GitHubClient {
             .send()
             .await?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            let detail: String = body.chars().take(240).collect();
-            bail!(
-                "Failed to fetch logs for step '{step_name}' (GitHub step index {step_index}): HTTP {}{}",
-                status.as_u16(),
-                if detail.trim().is_empty() {
-                    String::new()
-                } else {
-                    format!(": {detail}")
-                }
-            );
+        if response.status().is_success() {
+            return Ok(response.text().await?);
         }
 
-        Ok(response.text().await?)
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+
+        // GitHub sometimes returns 404 for an individual step-log download even
+        // when the job log itself is available. Recover from the full job log,
+        // using the step's own API timestamps so neighboring steps are never mixed
+        // into this response. Never fall back to the local step number or raw
+        // Worker diagnostics: both can attribute output to the wrong step.
+        if status.as_u16() == 404 {
+            if let (Some(started_at), Some(completed_at)) = (
+                job.steps[step_index].started_at.as_deref(),
+                job.steps[step_index].completed_at.as_deref(),
+            ) {
+                let full_log = self.get_job_logs(owner, repo, job_id).await
+                    .with_context(|| format!(
+                        "Step '{step_name}' log download returned 404 and the full job log could not be fetched"
+                    ))?;
+                if let Some(step_log) =
+                    extract_step_logs_by_time(&full_log, started_at, completed_at)
+                {
+                    return Ok(step_log);
+                }
+            }
+        }
+
+        let detail: String = body.chars().take(240).collect();
+        bail!(
+            "Failed to fetch logs for step '{step_name}' (GitHub step index {step_index}): HTTP {}{}",
+            status.as_u16(),
+            if detail.trim().is_empty() {
+                String::new()
+            } else {
+                format!(": {detail}")
+            }
+        )
     }
 
     /// Fetch the error/failure message for a completed job via check-run annotations.
@@ -559,6 +586,38 @@ fn extract_annotation_message(json: &str) -> Option<String> {
     annotations.into_iter().find_map(|a| a.message)
 }
 
+/// Extract only lines whose GitHub log timestamps fall inside one step's API time window.
+/// Returns None if the step timestamps cannot be parsed; an empty string is a valid
+/// result when GitHub has no output lines inside that step's interval.
+fn extract_step_logs_by_time(
+    raw_log: &str,
+    started_at: &str,
+    completed_at: &str,
+) -> Option<String> {
+    let start = chrono::DateTime::parse_from_rfc3339(started_at).ok()?;
+    let end = chrono::DateTime::parse_from_rfc3339(completed_at).ok()?;
+    if end < start {
+        return None;
+    }
+
+    let mut lines = Vec::new();
+    for raw_line in raw_log.lines() {
+        let line = raw_line.trim_start_matches('\u{feff}');
+        let Some((timestamp, message)) = line.split_once(' ') else {
+            continue;
+        };
+        let Ok(timestamp) = chrono::DateTime::parse_from_rfc3339(timestamp) else {
+            continue;
+        };
+
+        if timestamp >= start && timestamp <= end {
+            lines.push(message.to_string());
+        }
+    }
+
+    Some(lines.join("\n"))
+}
+
 /// Resolve a HomeRun step to exactly one GitHub job step by normalized name.
 ///
 /// Never fall back to the local numeric position: Worker-derived step numbers can be
@@ -640,6 +699,40 @@ pub fn parse_job_log_sections(raw_log: &str) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn step_log_time_fallback_excludes_neighboring_steps() {
+        let raw_log = concat!(
+            "2026-10-15T04:00:00.0000000Z previous step output\n",
+            "2026-10-15T04:00:01.0000000Z Build command\n",
+            "2026-10-15T04:00:02.0000000Z Build result\n",
+            "2026-10-15T04:00:03.0000000Z next step output\n",
+        );
+
+        let output = extract_step_logs_by_time(
+            raw_log,
+            "2026-10-15T04:00:01Z",
+            "2026-10-15T04:00:02Z",
+        ).unwrap();
+
+        assert_eq!(output, "Build command\nBuild result");
+    }
+
+    #[test]
+    fn step_log_time_fallback_handles_bom_and_invalid_lines() {
+        let raw_log = concat!(
+            "\u{feff}2026-10-15T04:00:01.0000000Z Build output\n",
+            "not a timestamp\n",
+        );
+
+        let output = extract_step_logs_by_time(
+            raw_log,
+            "2026-10-15T04:00:01Z",
+            "2026-10-15T04:00:02Z",
+        ).unwrap();
+
+        assert_eq!(output, "Build output");
+    }
 
     #[test]
     fn step_logs_resolve_by_name_even_when_local_number_is_offset() {
